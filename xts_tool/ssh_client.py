@@ -1,0 +1,313 @@
+"""
+SSH Client wrapper using Paramiko.
+Provides real-time command streaming, device check, and binary path detection.
+"""
+import os
+import re
+import socket
+import select
+import paramiko
+from typing import Callable, Optional, Tuple, List, Dict, Any
+from device_checker import evaluate_device_connection, DeviceInfo
+
+
+class SSHManager:
+    def __init__(self):
+        self.client: Optional[paramiko.SSHClient] = None
+        self.host: str = ""
+        self.port: int = 22
+        self.username: str = ""
+        self.password: Optional[str] = None
+        self.key_path: Optional[str] = None
+
+    def connect(self, host: str, port: int = 22, username: str = "lge", 
+                password: Optional[str] = None, key_path: Optional[str] = None, 
+                timeout: int = 10) -> Tuple[bool, str]:
+        """Establish SSH connection."""
+        self.disconnect()
+        self.host = host
+        self.port = port
+        self.username = username
+        self.password = password
+        self.key_path = key_path
+
+        try:
+            self.client = paramiko.SSHClient()
+            self.client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            
+            connect_kwargs = {
+                "hostname": host,
+                "port": port,
+                "username": username,
+                "timeout": timeout,
+                "banner_timeout": 30,
+            }
+            if key_path and os.path.exists(key_path):
+                connect_kwargs["key_filename"] = key_path
+            elif password:
+                connect_kwargs["password"] = password
+
+            self.client.connect(**connect_kwargs)
+            return True, f"Kết nối thành công tới {username}@{host}:{port}"
+        except Exception as e:
+            self.client = None
+            return False, f"Lỗi kết nối SSH: {str(e)}"
+
+    def disconnect(self):
+        """Disconnect active SSH connection."""
+        if self.client:
+            try:
+                self.client.close()
+            except Exception:
+                pass
+            self.client = None
+
+    def is_connected(self) -> bool:
+        """Check if connection is alive."""
+        if not self.client:
+            return False
+        transport = self.client.get_transport()
+        return transport is not None and transport.is_active()
+
+    def run_command(self, cmd: str, timeout: int = 60) -> Tuple[int, str, str]:
+        """Runs a synchronous command on remote server."""
+        if not self.is_connected():
+            return -1, "", "SSH chưa được kết nối."
+        try:
+            stdin, stdout, stderr = self.client.exec_command(cmd, timeout=timeout)
+            out = stdout.read().decode("utf-8", errors="replace")
+            err = stderr.read().decode("utf-8", errors="replace")
+            exit_code = stdout.channel.recv_exit_status()
+            return exit_code, out, err
+        except Exception as e:
+            return -1, "", str(e)
+
+    def run_command_stream(self, cmd: str, 
+                           output_callback: Optional[Callable[[str], None]] = None,
+                           check_abort: Optional[Callable[[], bool]] = None) -> Tuple[int, str]:
+        """
+        Runs command and streams stdout/stderr chunk by chunk in real-time.
+        Can be aborted via check_abort callback.
+        """
+        if not self.is_connected():
+            if output_callback:
+                output_callback("[ERROR] SSH chưa được kết nối.\n")
+            return -1, "SSH chưa kết nối"
+
+        try:
+            transport = self.client.get_transport()
+            channel = transport.open_session()
+            channel.get_pty(term="xterm", width=120, height=40)
+            channel.exec_command(cmd)
+
+            full_output = []
+            while True:
+                if check_abort and check_abort():
+                    channel.close()
+                    if output_callback:
+                        output_callback("\n[ABORTED] Tiến trình đã bị dừng bởi người dùng.\n")
+                    return -999, "".join(full_output)
+
+                r, _, _ = select.select([channel], [], [], 0.2)
+                if r:
+                    if channel.recv_ready():
+                        data = channel.recv(4096).decode("utf-8", errors="replace")
+                        if data:
+                            full_output.append(data)
+                            if output_callback:
+                                output_callback(data)
+                    
+                    if channel.recv_stderr_ready():
+                        err_data = channel.recv_stderr(4096).decode("utf-8", errors="replace")
+                        if err_data:
+                            full_output.append(err_data)
+                            if output_callback:
+                                output_callback(err_data)
+
+                if channel.exit_status_ready():
+                    # Read any remaining output
+                    while channel.recv_ready():
+                        data = channel.recv(4096).decode("utf-8", errors="replace")
+                        if data:
+                            full_output.append(data)
+                            if output_callback:
+                                output_callback(data)
+                    while channel.recv_stderr_ready():
+                        err_data = channel.recv_stderr(4096).decode("utf-8", errors="replace")
+                        if err_data:
+                            full_output.append(err_data)
+                            if output_callback:
+                                output_callback(err_data)
+                    break
+
+            exit_status = channel.recv_exit_status()
+            return exit_status, "".join(full_output)
+        except Exception as e:
+            err_msg = f"\n[ERROR] Lỗi khi thực thi lệnh: {str(e)}\n"
+            if output_callback:
+                output_callback(err_msg)
+            return -1, err_msg
+
+    def check_devices(self) -> Tuple[bool, str, List[DeviceInfo]]:
+        """
+        Executes 'adb devices' and 'fastboot devices' on remote server.
+        Returns evaluation of single-device requirement.
+        """
+        if not self.is_connected():
+            return False, "SSH chưa kết nối.", []
+
+        _, adb_out, _ = self.run_command("adb devices", timeout=10)
+        _, fb_out, _ = self.run_command("fastboot devices", timeout=10)
+
+        return evaluate_device_connection(adb_out, fb_out)
+
+    def detect_binary_paths(self, root_dir: str = "/home/lge/Environment/Storage/Binary/") -> Dict[str, str]:
+        """
+        Scans remote server Binary directory using python/bash to find user and userdebug release paths.
+        Looks for:
+        - userdebug: folder containing fastboot_n_fullnavi_blank_flash.sh or matching sit.userdebug
+        - user: folder containing fastboot_n_fullnavi_reflash.sh or matching sit.user
+        """
+        results = {
+            "userdebug_path": "",
+            "user_path": "",
+            "details": []
+        }
+
+        if not self.is_connected():
+            results["details"].append("Lỗi: SSH chưa kết nối.")
+            return results
+
+        # 1. Direct search by script name
+        find_script = f"""python3 -c '
+import os, glob, json
+
+root = "{root_dir}"
+data = {{"userdebug": "", "user": "", "all_dirs": []}}
+
+if os.path.exists(root):
+    # Scan subdirectories
+    for dirpath, dirnames, filenames in os.walk(root):
+        if "fastboot_n_fullnavi_blank_flash.sh" in filenames:
+            data["userdebug"] = dirpath
+        if "fastboot_n_fullnavi_reflash.sh" in filenames:
+            data["user"] = dirpath
+            
+    # Fallback to regex if exact script not yet found
+    if not data["userdebug"]:
+        for item in os.listdir(root):
+            full = os.path.join(root, item)
+            if os.path.isdir(full) and "userdebug" in item.lower():
+                sub = glob.glob(os.path.join(full, "RELEASE_*"))
+                if sub:
+                    data["userdebug"] = sub[0]
+                else:
+                    data["userdebug"] = full
+
+    if not data["user"]:
+        for item in os.listdir(root):
+            full = os.path.join(root, item)
+            if os.path.isdir(full) and "user" in item.lower() and "userdebug" not in item.lower():
+                sub = glob.glob(os.path.join(full, "RELEASE_*"))
+                if sub:
+                    data["user"] = sub[0]
+                else:
+                    data["user"] = full
+
+print(json.dumps(data))
+'
+"""
+        code, out, err = self.run_command(find_script, timeout=20)
+        import json
+        if code == 0 and out.strip():
+            try:
+                # Find JSON block in output
+                json_start = out.find("{")
+                json_end = out.rfind("}") + 1
+                if json_start != -1 and json_end != -1:
+                    parsed = json.loads(out[json_start:json_end])
+                    results["userdebug_path"] = parsed.get("userdebug", "")
+                    results["user_path"] = parsed.get("user", "")
+            except Exception as e:
+                results["details"].append(f"Không phân tích được kết quả JSON: {e}")
+
+        # Fallback to simple find if python script failed
+        if not results["userdebug_path"]:
+            c1, o1, _ = self.run_command(f'find {root_dir} -type f -name "fastboot_n_fullnavi_blank_flash.sh" 2>/dev/null | head -n 1')
+            if c1 == 0 and o1.strip():
+                results["userdebug_path"] = os.path.dirname(o1.strip()).replace("\\", "/")
+
+        if not results["user_path"]:
+            c2, o2, _ = self.run_command(f'find {root_dir} -type f -name "fastboot_n_fullnavi_reflash.sh" 2>/dev/null | head -n 1')
+            if c2 == 0 and o2.strip():
+                results["user_path"] = os.path.dirname(o2.strip()).replace("\\", "/")
+
+        return results
+
+    def detect_test_roots(self, base_dir: str = "/home/lge/GoogleQA/TestFolder/") -> List[str]:
+        """
+        Discovers test roots under base_dir (folders containing android-cts, android-ats, android-vts, etc.)
+        """
+        if not self.is_connected():
+            return []
+        
+        cmd = f'find {base_dir} -maxdepth 3 -type d \\( -name "android-cts" -o -name "android-ats" -o -name "android-vts" -o -name "android-sts" \\) 2>/dev/null'
+        code, out, _ = self.run_command(cmd, timeout=10)
+        if code == 0 and out.strip():
+            lines = [l.strip() for l in out.strip().splitlines() if l.strip()]
+            return lines
+        return []
+
+    def scan_report_preview(self, test_root: str) -> Dict[str, Any]:
+        """
+        Runs remote scan script to return JSON analysis of sessions in results/ and Report/.
+        """
+        import json
+        from report_collector import REMOTE_SCAN_SCRIPT
+
+        if not self.is_connected():
+            return {"error": "SSH chưa được kết nối."}
+
+        try:
+            sftp = self.client.open_sftp()
+            with sftp.file("/tmp/xts_scan_report.py", "w") as f:
+                f.write(REMOTE_SCAN_SCRIPT)
+            sftp.close()
+
+            code, out, err = self.run_command(f'python3 /tmp/xts_scan_report.py "{test_root}"', timeout=30)
+            if code == 0 and out.strip():
+                json_start = out.find("{")
+                json_end = out.rfind("}") + 1
+                if json_start != -1 and json_end != -1:
+                    return json.loads(out[json_start:json_end])
+            return {"error": f"Lỗi khi quét kết quả: {err or out}"}
+        except Exception as e:
+            return {"error": f"Lỗi ngoại lệ khi quét: {str(e)}"}
+
+    def run_report_organize_stream(self, test_root: str,
+                                   output_callback: Optional[Callable[[str], None]] = None,
+                                   check_abort: Optional[Callable[[], bool]] = None) -> Tuple[int, str]:
+        """
+        Uploads and runs organize script on server, streaming logs chunk-by-chunk in real time.
+        """
+        from report_collector import REMOTE_ORGANIZE_SCRIPT
+
+        if not self.is_connected():
+            if output_callback:
+                output_callback("[ERROR] SSH chưa kết nối.\n")
+            return -1, "SSH chưa kết nối"
+
+        try:
+            sftp = self.client.open_sftp()
+            with sftp.file("/tmp/xts_organize_report.py", "w") as f:
+                f.write(REMOTE_ORGANIZE_SCRIPT)
+            sftp.close()
+
+            cmd = f'python3 /tmp/xts_organize_report.py "{test_root}"'
+            return self.run_command_stream(cmd, output_callback=output_callback, check_abort=check_abort)
+        except Exception as e:
+            err_msg = f"[ERROR] Lỗi khi thực thi tổ chức Report: {str(e)}\n"
+            if output_callback:
+                output_callback(err_msg)
+            return -1, err_msg
+

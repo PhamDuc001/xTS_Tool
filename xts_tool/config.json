@@ -1,0 +1,61 @@
+{
+  "saved_servers": [
+    {
+      "name": "Ubuntu 10.218.158.64",
+      "host": "10.218.158.64",
+      "port": 22,
+      "username": "lge",
+      "password": "lge@1234"
+    },
+    {
+      "name": "Ubuntu 10.218.158.65",
+      "host": "10.218.158.65",
+      "port": 22,
+      "username": "lge",
+      "password": "lge@1234"
+    },
+    {
+      "name": "Ubuntu 10.218.158.67",
+      "host": "10.218.158.67",
+      "port": 22,
+      "username": "lge",
+      "password": "lge@1234"
+    }
+  ],
+  "default_paths": {
+    "binary_root": "/home/lge/Environment/Storage/Binary/",
+    "google_key": {
+      "name": "Google Key",
+      "path": "/home/lge/Environment/PreSetup/NissanEU/",
+      "script": "./addGoogle_key_Nissan_P33A.sh",
+      "retry_script": "./AddGoogle_key_Nissan.sh \"AttestationChainTee\""
+    },
+    "mtc_script": {
+      "name": "MTC Script",
+      "path": "/home/lge/Environment/scripts/PZ1D_26MY/",
+      "scripts": [
+        "./MTC_PZ1D_26MY.sh",
+        "./ChangeLanguage.sh"
+      ]
+    },
+    "calibration": {
+      "name": "Calibration",
+      "path": "/home/lge/Environment/scripts/PZ1D_26MY/Calibrations_aio_2026May/Calibrations/",
+      "script": "./do_calibration.sh"
+    },
+    "gsi_image": {
+      "name": "GSI Image",
+      "path": "/home/lge/Environment/GSI_IMAGE/"
+    }
+  },
+  "flash_scripts": {
+    "userdebug": "./fastboot_n_fullnavi_blank_flash.sh",
+    "user": "./fastboot_n_fullnavi_reflash.sh"
+  },
+  "timeouts": {
+    "bootloader_wait_sec": 30,
+    "adb_reboot_wait_sec": 75,
+    "fastbootd_wait_sec": 45,
+    "poll_interval_sec": 3
+  }
+}

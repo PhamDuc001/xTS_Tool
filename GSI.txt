@@ -1,0 +1,48 @@
+1. Flash userdebug
+cd /home/lge/Environment/Storage/Binary/AIVI2_N_FULL.YAK.31.03.30.U0M.sit.userdebug/RELEASE_8155_UOS_2026-09-04_05_00_BDV/
+adb reboot bootloader
+fastboot devices   (sleep ~5s để device vào trạng thái fastboot)
+./fastboot_n_fullnavi_blank_flash.sh
+fastboot reboot
+
+2. Google Attestation Key
+cd /home/lge/Environment/PreSetup/NissanEU/
+Run: ./addGoogle_key_Nissan_P33A.sh
+
+3. MTC Update
+cd /home/lge/Environment/scripts/PZ1D_26MY/
+Run: ./MTC_PZ1D_26MY.sh
+Run: ./ChangeLanguage.sh {serial}
+
+4. Flash user
+cd /home/lge/Environment/Storage/Binary/AIVI2_N_FULL.YAK.31.03.30.U0M.sit.user/RELEASE_8155_UOS_2026-09-04_07_11_BDV_PROD/
+adb reboot bootloader
+fastboot devices
+./fastboot_n_fullnavi_reflash.sh
+fastboot reboot
+
+5. Inform Authentication by manual to user
+6. After user confirm authen successful, GSI setting
+cd /home/lge/Environment/Storage/Binary/AIVI2_N_FULL.YAK.31.03.30.U0M.sit.user/RELEASE_8155_UOS_2026-09-04_07_11_BDV_PROD/
+adb reboot bootloader
+fastboot devices  
+fastboot flash boot_a boot-debug.img
+fastboot flash boot_b boot-debug.img
+fastboot reboot
+
+cd /home/lge/Environment/GSI_IMAGE/
+adb reboot fastboot
+fastboot erase system_a 
+fastboot flash -S 250M system_a system.img
+fastboot reboot
+
+
+cd /home/lge/Environment/Storage/Binary/AIVI2_N_FULL.YAK.31.03.30.U0M.sit.user/RELEASE_8155_UOS_2026-09-04_07_11_BDV_PROD/
+adb reboot bootloader
+fastboot flash boot_a boot.img
+fastboot flash boot_b boot.img
+fastboot reboot
+
+
+
+
