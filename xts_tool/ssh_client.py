@@ -6,6 +6,7 @@ import os
 import re
 import socket
 import select
+import time
 import paramiko
 from typing import Callable, Optional, Tuple, List, Dict, Any
 from device_checker import evaluate_device_connection, DeviceInfo
@@ -82,12 +83,14 @@ class SSHManager:
         except Exception as e:
             return -1, "", str(e)
 
-    def run_command_stream(self, cmd: str, 
-                           output_callback: Optional[Callable[[str], None]] = None,
-                           check_abort: Optional[Callable[[], bool]] = None) -> Tuple[int, str]:
+    def run_command_stream(self, cmd: str, output_callback: Optional[Callable[[str], None]] = None,
+                           check_abort: Optional[Callable[[], bool]] = None,
+                           auto_press_any_key: bool = True) -> Tuple[int, str]:
         """
         Runs command and streams stdout/stderr chunk by chunk in real-time.
         Can be aborted via check_abort callback.
+        If auto_press_any_key is True, automatically sends Enter whenever prompts
+        like 'Press any key to continue' appear in the output stream.
         """
         if not self.is_connected():
             if output_callback:
@@ -101,6 +104,12 @@ class SSHManager:
             channel.exec_command(cmd)
 
             full_output = []
+            prompt_buffer = ""
+            prompt_patterns = [
+                re.compile(r"press any (key|button)", re.IGNORECASE),
+                re.compile(r"nhấn phím bất kỳ", re.IGNORECASE)
+            ]
+
             while True:
                 if check_abort and check_abort():
                     channel.close()
@@ -116,6 +125,8 @@ class SSHManager:
                             full_output.append(data)
                             if output_callback:
                                 output_callback(data)
+                            if auto_press_any_key:
+                                prompt_buffer += data
                     
                     if channel.recv_stderr_ready():
                         err_data = channel.recv_stderr(4096).decode("utf-8", errors="replace")
@@ -123,6 +134,20 @@ class SSHManager:
                             full_output.append(err_data)
                             if output_callback:
                                 output_callback(err_data)
+                            if auto_press_any_key:
+                                prompt_buffer += err_data
+
+                    if auto_press_any_key and prompt_buffer:
+                        if len(prompt_buffer) > 2000:
+                            prompt_buffer = prompt_buffer[-1000:]
+                        for pat in prompt_patterns:
+                            if pat.search(prompt_buffer):
+                                prompt_buffer = ""
+                                if output_callback:
+                                    output_callback("\n[Auto-confirm] Phát hiện yêu cầu xác nhận ('Press any key'), tự động gửi phím Enter để tiếp tục...\n")
+                                time.sleep(0.5)
+                                channel.send("\n")
+                                break
 
                 if channel.exit_status_ready():
                     # Read any remaining output

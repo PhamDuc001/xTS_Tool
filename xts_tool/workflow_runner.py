@@ -97,7 +97,8 @@ def build_workflow_steps(suite_name: str, paths: Dict[str, Any]) -> List[Dict[st
             "id": "lock_bootloader",
             "title": "4. Lock Bootloader",
             "type": "lock_bootloader",
-            "desc": "adb reboot bootloader -> fastboot flashing lock -> reboot"
+            "wait_for_adb": True,
+            "desc": "adb reboot bootloader -> fastboot flashing lock -> reboot & chờ adb"
         })
         return steps
 
@@ -109,7 +110,8 @@ def build_workflow_steps(suite_name: str, paths: Dict[str, Any]) -> List[Dict[st
         "workdir": user_dir,
         "script": "./fastboot_n_fullnavi_reflash.sh",
         "reboot_after": True,
-        "desc": "Reboot bootloader -> fastboot_n_fullnavi_reflash.sh -> reboot & chờ adb"
+        "wait_for_adb": False,
+        "desc": "Reboot bootloader -> fastboot_n_fullnavi_reflash.sh -> reboot (không chờ adb)"
     })
 
     # Manual Authentication #1
@@ -127,13 +129,14 @@ def build_workflow_steps(suite_name: str, paths: Dict[str, Any]) -> List[Dict[st
             "id": "lock_bootloader",
             "title": "6. Lock Bootloader",
             "type": "lock_bootloader",
-            "desc": "adb reboot bootloader -> fastboot flashing lock -> reboot"
+            "wait_for_adb": False,
+            "desc": "adb reboot bootloader -> fastboot flashing lock -> reboot (không chờ adb)"
         })
         steps.append({
             "id": "manual_auth_2",
             "title": "7. Xác thực lại thủ công (Post-lock Authentication)",
             "type": "manual_auth",
-            "prompt": "Đã khóa Bootloader thành công.\nVui lòng thực hiện xác thực thủ công lại trên màn hình thiết bị lần cuối.",
+            "prompt": "Đã khóa Bootloader thành công.\nVui lòng thực hiện xác thực thủ công lại trên màn hình thiết bị lần cuối.\nBấm 'Tiếp tục' sau khi hoàn tất thành công.",
             "desc": "Xác thực lại sau khi bootloader locked"
         })
 
@@ -320,6 +323,15 @@ class WorkflowWorker(QThread):
     # -------------------------------------------------------------
     def _execute_step(self, step: Dict[str, Any]) -> bool:
         stype = step.get("type")
+        sid = step.get("id", "")
+
+        # Kiểm tra và đảm bảo thiết bị đã ở trạng thái ADB ổn định trước khi chạy Google Key hoặc MTC Update
+        if sid == "google_key":
+            if not self._ensure_adb_ready("Trước khi chạy Google Attestation Key", post_sleep=10):
+                return False
+        elif sid in ["mtc_update", "mtc_and_calibration"]:
+            if not self._ensure_adb_ready("Trước khi chạy MTC Update", post_sleep=10):
+                return False
         
         if stype == "flash_sw":
             return self._step_flash_sw(step)
@@ -328,7 +340,7 @@ class WorkflowWorker(QThread):
         elif stype == "composite":
             return self._step_composite(step)
         elif stype == "lock_bootloader":
-            return self._step_lock_bootloader()
+            return self._step_lock_bootloader(step)
         elif stype == "manual_auth":
             return self._step_manual_auth(step)
         elif stype == "flash_boot_debug":
@@ -341,9 +353,80 @@ class WorkflowWorker(QThread):
             self.log(f"Không nhận diện được loại bước: {stype}", "ERROR")
             return False
 
+
     # -------------------------------------------------------------
     # Device Wait Helpers
     # -------------------------------------------------------------
+    def _get_device_serial(self) -> str:
+        code, out, _ = self.ssh.run_command("adb get-serialno", timeout=5)
+        serial = out.strip()
+        if code == 0 and serial and serial != "unknown":
+            return serial
+        return ""
+
+    def _ensure_adb_ready(self, reason: str = "", post_sleep: int = 10, timeout_sec: int = 90) -> bool:
+        """
+        Đảm bảo thiết bị đã ở trạng thái kết nối ADB ổn định trước khi thực hiện bước kế tiếp.
+        Nếu thiết bị chưa ở trạng thái ADB (ví dụ đang reboot từ script trước đó), 
+        sẽ tự động chờ đến khi thiết bị xuất hiện trong 'adb devices'.
+        Sau đó tạm dừng post_sleep giây (~10s) để adbd và các dịch vụ nền Android ổn định hoàn toàn.
+        """
+        if self._abort_requested:
+            return False
+
+        header_msg = f"[{reason}] " if reason else ""
+        self.log(f"{header_msg}Kiểm tra trạng thái kết nối ADB của thiết bị...", "INFO")
+
+        # 1. Kiểm tra trạng thái ADB hiện tại
+        code, out, _ = self.ssh.run_command("adb devices", timeout=10)
+        online = False
+        if code == 0:
+            lines = [l for l in out.strip().splitlines() if "\tdevice" in l]
+            if lines:
+                online = True
+                self.log(f"[OK] Thiết bị đang online trong ADB: {lines[0]}", "SUCCESS")
+
+        # 2. Nếu chưa online, tiến hành chờ thiết bị khởi động về ADB
+        if not online:
+            self.log(f"{header_msg}Thiết bị chưa ở trạng thái ADB (có thể đang khởi động lại từ bước trước). Đang chờ kết nối (tối đa {timeout_sec}s)...", "WARN")
+            start = time.time()
+            retry_cnt = 0
+            while time.time() - start < timeout_sec:
+                if self._abort_requested:
+                    return False
+                retry_cnt += 1
+                time.sleep(self.timeouts.get("poll_interval_sec", 3))
+                code, out, _ = self.ssh.run_command("adb devices", timeout=10)
+                if code == 0:
+                    lines = [l for l in out.strip().splitlines() if "\tdevice" in l]
+                    if lines:
+                        online = True
+                        self.log(f"[OK] Thiết bị đã khởi động và xuất hiện trong ADB: {lines[0]}", "SUCCESS")
+                        break
+                if retry_cnt % 5 == 0:
+                    self.log(f"Vẫn đang chờ thiết bị vào trạng thái ADB (lần {retry_cnt})...", "INFO")
+
+            if not online:
+                self.log(f"[ERROR] {header_msg}Hết thời gian chờ (timeout {timeout_sec}s)! Thiết bị không kết nối được qua ADB.", "ERROR")
+                return False
+
+        # 3. Sau khi device đã online, sleep ~10s để adbd và các service hệ thống ổn định hoàn toàn
+        if post_sleep > 0:
+            self.log(f"{header_msg}Thiết bị đã ở trạng thái ADB. Tạm dừng {post_sleep}s để hệ thống ổn định hoàn toàn trước khi tiếp tục...", "INFO")
+            for _ in range(post_sleep):
+                if self._abort_requested:
+                    return False
+                time.sleep(1)
+
+        # 4. Kiểm tra phản hồi thực tế từ adb shell
+        test_code, test_out, _ = self.ssh.run_command("adb shell echo ok", timeout=10)
+        if test_code == 0 and "ok" in test_out:
+            self.log(f"[OK] {header_msg}Thiết bị đã sẵn sàng thực thi lệnh qua ADB.", "SUCCESS")
+        else:
+            time.sleep(3)
+
+        return True
+
     def _wait_for_fastboot(self, timeout_sec: int = 35) -> bool:
         self.log(f"Đang chờ thiết bị chuyển sang chế độ Fastboot (tối đa {timeout_sec}s)...", "INFO")
         start = time.time()
@@ -390,12 +473,18 @@ class WorkflowWorker(QThread):
             self.log("[ERROR] Thư mục release không tồn tại hoặc chưa cấu hình!", "ERROR")
             return False
 
-        # 1. adb reboot bootloader
-        self.log("Chạy: adb reboot bootloader", "INFO")
-        c1, out1, err1 = self.ssh.run_command("adb reboot bootloader")
-        if c1 != 0 and "no devices" in (out1 + err1):
-            # Maybe device is already in fastboot?
-            self.log("Thiết bị có thể đã ở chế độ fastboot, đang kiểm tra...", "WARN")
+        # 1. Trước khi adb reboot bootloader: kiểm tra xem thiết bị đã ở fastboot chưa
+        fb_code, fb_out, _ = self.ssh.run_command("fastboot devices", timeout=5)
+        if fb_code == 0 and "fastboot" in fb_out:
+            self.log("[OK] Thiết bị đã ở sẵn chế độ Fastboot, bỏ qua bước adb reboot bootloader.", "INFO")
+        else:
+            # Đảm bảo thiết bị ở trạng thái ADB ổn định trước khi reboot bootloader
+            if not self._ensure_adb_ready(f"Trước khi adb reboot bootloader ({step.get('title', '')})", post_sleep=10):
+                return False
+            self.log("Chạy: adb reboot bootloader", "INFO")
+            c1, out1, err1 = self.ssh.run_command("adb reboot bootloader")
+            if c1 != 0 and "no devices" in (out1 + err1):
+                self.log("Thiết bị có thể đã ở chế độ fastboot, đang kiểm tra...", "WARN")
 
         # 2. wait for fastboot
         if not self._wait_for_fastboot(self.timeouts.get("bootloader_wait_sec", 35)):
@@ -417,8 +506,22 @@ class WorkflowWorker(QThread):
         if step.get("reboot_after", True):
             self.log("Chạy: fastboot reboot", "INFO")
             self.ssh.run_command("fastboot reboot")
+
+            # Nếu bước này cấu hình không chờ adb (vd: Flash User Build cần người dùng xác thực thủ công trên màn hình)
+            if not step.get("wait_for_adb", True):
+                self.log("[OK] Đã phát lệnh 'fastboot reboot' thành công. Thiết bị đang khởi động lại User Build.", "SUCCESS")
+                self.log("ℹ️ Bước Flash User Build đã hoàn thành. Vui lòng chuyển sang bước tiếp theo để thực hiện xác thực thủ công trên màn hình thiết bị.", "INFO")
+                time.sleep(3)
+                return True
+
             if not self._wait_for_adb(initial_sleep=20, timeout_sec=self.timeouts.get("adb_reboot_wait_sec", 80)):
                 return False
+            # Sau khi vừa reboot về adb, sleep 10s để hệ thống ổn định
+            self.log("Tạm dừng 10s sau khi khởi động về ADB để hệ thống ổn định hoàn toàn...", "INFO")
+            for _ in range(10):
+                if self._abort_requested:
+                    return False
+                time.sleep(1)
 
         return True
 
@@ -427,10 +530,25 @@ class WorkflowWorker(QThread):
             self.log("[ERROR] Thư mục làm việc chưa được cấu hình!", "ERROR")
             return False
 
+        serial = self._get_device_serial()
+
         for cmd_item in commands:
             if self._abort_requested:
                 return False
-            cmd = f"cd {workdir} && {cmd_item}"
+
+            actual_cmd = cmd_item
+            if "{serial}" in actual_cmd:
+                actual_cmd = actual_cmd.replace("{serial}", serial)
+            elif "ChangeLanguage.sh" in actual_cmd and serial and len(actual_cmd.split()) == 1:
+                actual_cmd = f"{actual_cmd} {serial}"
+
+            # Đảm bảo quyền thực thi nếu là shell script
+            script_token = actual_cmd.split()[0]
+            if script_token.endswith(".sh"):
+                cmd = f"cd {workdir} && chmod +x {script_token} && {actual_cmd}"
+            else:
+                cmd = f"cd {workdir} && {actual_cmd}"
+
             self.log(f"Thực thi: {cmd}", "INFO")
             code, out = self.ssh.run_command_stream(
                 cmd,
@@ -438,24 +556,38 @@ class WorkflowWorker(QThread):
                 check_abort=self.is_aborted
             )
             if code != 0:
-                self.log(f"[ERROR] Lệnh '{cmd_item}' thất bại với mã {code}", "ERROR")
+                self.log(f"[ERROR] Lệnh '{actual_cmd}' thất bại với mã {code}", "ERROR")
                 return False
         return True
 
     def _step_composite(self, step: Dict[str, Any]) -> bool:
         substeps = step.get("substeps", [])
-        for sub in substeps:
+        for idx, sub in enumerate(substeps):
             if self._abort_requested:
                 return False
-            self.log(f"-> Chạy phân mục: {sub.get('title', '')}", "INFO")
+            title = sub.get('title', '')
+            self.log(f"-> Chạy phân mục: {title}", "INFO")
+            # Nếu là phân mục tiếp theo (như Calibration sau MTC), đảm bảo thiết bị đã về ADB ổn định
+            if idx > 0:
+                if not self._ensure_adb_ready(f"Trước khi chạy {title}", post_sleep=10):
+                    return False
             ok = self._step_run_commands(sub.get("workdir", ""), sub.get("commands", []))
             if not ok:
                 return False
         return True
 
-    def _step_lock_bootloader(self) -> bool:
-        self.log("Chạy: adb reboot bootloader", "INFO")
-        self.ssh.run_command("adb reboot bootloader")
+
+    def _step_lock_bootloader(self, step: Optional[Dict[str, Any]] = None) -> bool:
+        # Kiểm tra nếu thiết bị đã ở Fastboot thì không cần reboot bootloader
+        fb_code, fb_out, _ = self.ssh.run_command("fastboot devices", timeout=5)
+        if fb_code == 0 and "fastboot" in fb_out:
+            self.log("[OK] Thiết bị đã ở sẵn chế độ Fastboot, bỏ qua bước adb reboot bootloader.", "INFO")
+        else:
+            if not self._ensure_adb_ready("Trước khi adb reboot bootloader (Lock Bootloader)", post_sleep=10):
+                return False
+            self.log("Chạy: adb reboot bootloader", "INFO")
+            self.ssh.run_command("adb reboot bootloader")
+
         if not self._wait_for_fastboot(self.timeouts.get("bootloader_wait_sec", 35)):
             return False
 
@@ -471,7 +603,22 @@ class WorkflowWorker(QThread):
 
         self.log("Chạy: fastboot reboot", "INFO")
         self.ssh.run_command("fastboot reboot")
-        return self._wait_for_adb(initial_sleep=20, timeout_sec=self.timeouts.get("adb_reboot_wait_sec", 80))
+
+        # Nếu bước này cấu hình không chờ adb (vd: ATS/CTS có bước manual_auth_2 tiếp theo)
+        if step and not step.get("wait_for_adb", True):
+            self.log("[OK] Đã phát lệnh 'fastboot reboot' sau khi khóa bootloader thành công. Thiết bị đang khởi động lại.", "SUCCESS")
+            self.log("ℹ️ Bước Khóa Bootloader đã hoàn thành. Vui lòng chuyển sang bước tiếp theo để thực hiện xác thực thủ công trên màn hình thiết bị.", "INFO")
+            time.sleep(3)
+            return True
+
+        if not self._wait_for_adb(initial_sleep=20, timeout_sec=self.timeouts.get("adb_reboot_wait_sec", 80)):
+            return False
+        self.log("Tạm dừng 10s sau khi khóa bootloader và khởi động về ADB...", "INFO")
+        for _ in range(10):
+            if self._abort_requested:
+                return False
+            time.sleep(1)
+        return True
 
     def _step_manual_auth(self, step: Dict[str, Any]) -> bool:
         prompt = step.get("prompt", "Vui lòng xác thực thủ công trên thiết bị.")
@@ -493,8 +640,15 @@ class WorkflowWorker(QThread):
 
     def _step_flash_boot_debug(self, step: Dict[str, Any]) -> bool:
         workdir = step.get("workdir", "")
-        self.log("Chạy: adb reboot bootloader", "INFO")
-        self.ssh.run_command("adb reboot bootloader")
+        fb_code, fb_out, _ = self.ssh.run_command("fastboot devices", timeout=5)
+        if fb_code == 0 and "fastboot" in fb_out:
+            self.log("[OK] Thiết bị đã ở sẵn chế độ Fastboot, bỏ qua bước adb reboot bootloader.", "INFO")
+        else:
+            if not self._ensure_adb_ready("Trước khi adb reboot bootloader (Flash Boot-Debug)", post_sleep=10):
+                return False
+            self.log("Chạy: adb reboot bootloader", "INFO")
+            self.ssh.run_command("adb reboot bootloader")
+
         if not self._wait_for_fastboot(self.timeouts.get("bootloader_wait_sec", 35)):
             return False
 
@@ -509,12 +663,26 @@ class WorkflowWorker(QThread):
             self.log("[ERROR] Flash boot-debug.img thất bại!", "ERROR")
             return False
 
-        return self._wait_for_adb(initial_sleep=20, timeout_sec=self.timeouts.get("adb_reboot_wait_sec", 80))
+        if not self._wait_for_adb(initial_sleep=20, timeout_sec=self.timeouts.get("adb_reboot_wait_sec", 80)):
+            return False
+        self.log("Tạm dừng 10s sau khi khởi động về ADB...", "INFO")
+        for _ in range(10):
+            if self._abort_requested:
+                return False
+            time.sleep(1)
+        return True
 
     def _step_flash_system_gsi(self, step: Dict[str, Any]) -> bool:
         workdir = step.get("workdir", "")
-        self.log("Chạy: adb reboot fastboot (vào fastbootd)", "INFO")
-        self.ssh.run_command("adb reboot fastboot")
+        fb_code, fb_out, _ = self.ssh.run_command("fastboot devices", timeout=5)
+        if fb_code == 0 and "fastboot" in fb_out:
+            self.log("[OK] Thiết bị đã ở sẵn chế độ Fastboot/Fastbootd.", "INFO")
+        else:
+            if not self._ensure_adb_ready("Trước khi adb reboot fastboot (Flash GSI System)", post_sleep=10):
+                return False
+            self.log("Chạy: adb reboot fastboot (vào fastbootd)", "INFO")
+            self.ssh.run_command("adb reboot fastboot")
+
         if not self._wait_for_fastboot(self.timeouts.get("fastbootd_wait_sec", 45)):
             return False
 
@@ -529,12 +697,26 @@ class WorkflowWorker(QThread):
             self.log("[ERROR] Flash system.img thất bại!", "ERROR")
             return False
 
-        return self._wait_for_adb(initial_sleep=20, timeout_sec=self.timeouts.get("adb_reboot_wait_sec", 80))
+        if not self._wait_for_adb(initial_sleep=20, timeout_sec=self.timeouts.get("adb_reboot_wait_sec", 80)):
+            return False
+        self.log("Tạm dừng 10s sau khi khởi động về ADB...", "INFO")
+        for _ in range(10):
+            if self._abort_requested:
+                return False
+            time.sleep(1)
+        return True
 
     def _step_flash_boot_orig(self, step: Dict[str, Any]) -> bool:
         workdir = step.get("workdir", "")
-        self.log("Chạy: adb reboot bootloader", "INFO")
-        self.ssh.run_command("adb reboot bootloader")
+        fb_code, fb_out, _ = self.ssh.run_command("fastboot devices", timeout=5)
+        if fb_code == 0 and "fastboot" in fb_out:
+            self.log("[OK] Thiết bị đã ở sẵn chế độ Fastboot, bỏ qua bước adb reboot bootloader.", "INFO")
+        else:
+            if not self._ensure_adb_ready("Trước khi adb reboot bootloader (Flash Boot Orig)", post_sleep=10):
+                return False
+            self.log("Chạy: adb reboot bootloader", "INFO")
+            self.ssh.run_command("adb reboot bootloader")
+
         if not self._wait_for_fastboot(self.timeouts.get("bootloader_wait_sec", 35)):
             return False
 
@@ -549,4 +731,12 @@ class WorkflowWorker(QThread):
             self.log("[ERROR] Flash boot.img thất bại!", "ERROR")
             return False
 
-        return self._wait_for_adb(initial_sleep=20, timeout_sec=self.timeouts.get("adb_reboot_wait_sec", 80))
+        if not self._wait_for_adb(initial_sleep=20, timeout_sec=self.timeouts.get("adb_reboot_wait_sec", 80)):
+            return False
+        self.log("Tạm dừng 10s sau khi khởi động về ADB...", "INFO")
+        for _ in range(10):
+            if self._abort_requested:
+                return False
+            time.sleep(1)
+        return True
+
