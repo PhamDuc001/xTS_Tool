@@ -1,6 +1,6 @@
 # Bộ Tài Liệu Đặc Tả Kỹ Thuật Tính Năng "Generate Report" Cho `xTS_Tool`
 
-Tài liệu này được biên soạn đầy đủ và chi tiết sau quá trình khảo sát, thực nghiệm và chuẩn hóa toàn bộ luồng tạo báo cáo chứng chỉ Google Certification xTS (Android Automotive OS) trên hệ thống máy chủ LG & Nissan AIVI.
+Tài liệu này được biên soạn đầy đủ và hoàn thiện sau quá trình khảo sát, thực nghiệm và chuẩn hóa toàn bộ luồng tạo báo cáo chứng chỉ Google Certification xTS (Android Automotive OS) trên hệ thống máy chủ LG & Nissan AIVI.
 
 ---
 
@@ -8,34 +8,36 @@ Tài liệu này được biên soạn đầy đủ và chi tiết sau quá trì
 
 | STT | Tài liệu | Nội dung chính |
 | :---: | :--- | :--- |
-| **01** | [**`01_WORKFLOW_OVERVIEW.md`**](./01_WORKFLOW_OVERVIEW.md) | **Tổng quan kiến trúc & sơ đồ luồng hệ thống:**<br>• Kiến trúc 4 thực thể (Local Client, Server 66, APTRA, GOOGLEQA).<br>• Sơ đồ luồng dữ liệu Mermaid.<br>• Bảng phân định vai trò và thông tin kết nối các máy chủ. |
-| **02** | [**`02_STEP_BY_STEP_PIPELINE.md`**](./02_STEP_BY_STEP_PIPELINE.md) | **Quy trình chi tiết 13 bước thực thi:**<br>• Hướng dẫn chi tiết từng bước từ dữ liệu thô `01.Full/`.<br>• Lệnh gọi `ReportGenerator.py`.<br>• Đồng bộ APTRA và GOOGLEQA.<br>• Chuẩn hóa đổi tên `03.` và làm sạch file Excel.<br>• Tạo và cập nhật file Summary và danh sách Fail. |
-| **03** | [**`03_DATA_DICTIONARY_AND_FORMATS.md`**](./03_DATA_DICTIONARY_AND_FORMATS.md) | **Từ điển dữ liệu & bảng tính mẫu Excel:**<br>• Bảng tọa độ chính xác từng ô (cell coordinates) cho file `03.` và file Summary.<br>• Bảng demo dữ liệu thực tế trích xuất từ bản build `YAK.31.03.30`.<br>• Quy tắc lọc Fail (`Failed > 0`) và unmerge bảo toàn công thức. |
-| **04** | [**`04_INTEGRATION_REQUIREMENTS_XTS_TOOL.md`**](./04_INTEGRATION_REQUIREMENTS_XTS_TOOL.md) | **Yêu cầu kỹ thuật tích hợp vào `xTS_Tool`:**<br>• Thiết kế giao diện (UI Form) với các trường cấu hình và metadata.<br>• Thiết kế các class/module backend (`report_pipeline_engine.py`, `excel_report_formatter.py`).<br>• Cơ chế xử lý ngoại lệ, cảnh báo file mẫu và sao lưu dữ liệu an toàn. |
+| **01** | [**`Question.md`**](./Question.md) | **Tổng hợp câu hỏi làm rõ & Khuyến nghị kỹ thuật:** Toàn bộ giải đáp về APTRA, phương thức truyền file, môi trường xử lý Excel, quy tắc tên file và giao diện UI/UX. |
+| **02** | [**`01_WORKFLOW_OVERVIEW.md`**](./01_WORKFLOW_OVERVIEW.md) | **Tổng quan kiến trúc & sơ đồ luồng hệ thống:** Kiến trúc kết hợp Server-to-Server và Local Windows `openpyxl`, bảng kết nối máy chủ. |
+| **03** | [**`02_STEP_BY_STEP_PIPELINE.md`**](./02_STEP_BY_STEP_PIPELINE.md) | **Quy trình chi tiết 9 bước thực thi:** Lệnh gọi `ReportGenerator.py`, cơ chế pop-up APTRA, tải trực tiếp về Local, xử lý Excel và xuất bản lên GOOGLEQA. |
+| **04** | [**`03_DATA_DICTIONARY_AND_FORMATS.md`**](./03_DATA_DICTIONARY_AND_FORMATS.md) | **Từ điển dữ liệu & bảng tính mẫu Excel:** Tọa độ chính xác từng ô Excel (`C3:C6`, `G2:G6`), cấu trúc sheet Summary, lọc lỗi `Failed > 0`, bảng demo thực tế từ build `YAK.31.03.30`. |
+| **05** | [**`04_INTEGRATION_REQUIREMENTS_XTS_TOOL.md`**](./04_INTEGRATION_REQUIREMENTS_XTS_TOOL.md) | **Yêu cầu kỹ thuật tích hợp vào `xTS_Tool`:** Thiết kế Sub-tab 3 `Generate Report`, các class engine backend, chế độ Run All & Step-by-Step, cơ chế an toàn dữ liệu. |
 
 ---
 
-## 🚀 Tóm tắt luồng công việc chính (Quick Flowchart)
+## 🚀 Sơ đồ tóm tắt luồng công việc (Sequence Diagram)
 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant UI as xTS_Tool UI
+    participant UI as xTS_Tool (Local Windows)
     participant S66 as Server 10.218.158.66
     participant APTRA as APTRA Server
     participant GQ as GOOGLEQA Server
 
-    UI->>S66: 1. Chạy ReportGenerator.py -p 01.Full/
+    UI->>S66: 1. Kích hoạt ReportGenerator.py -p 01.Full/
     S66->>S66: Sinh 00.Internal, 00.OEM_APFE zips, nén 01.*
-    S66->>GQ: 2. Upload 01.* và 00.OEM_APFE zips
-    S66->>APTRA: 3. Copy 00.Internal/*Results (XML & HTML)
-    APTRA->>APTRA: 4. Phân tích XML -> sinh *.xlsx & summary.csv
-    S66->>APTRA: 5. Kéo các file *.xlsx về ResultFinal/
-    S66->>S66: 6. Đổi tên thành 03.* và format header/clean rows 15-40
-    S66->>GQ: 7. Lấy file Summary mẫu version trước
-    S66->>S66: 8. Append block mới, map 7 chỉ số, ghi nhận Module/TC Fail
-    S66->>GQ: 9. Upload gói hoàn thiện (01, 02, 03, Summary) lên GOOGLEQA
+    S66->>GQ: 2. Server-to-Server: Upload 01.* và 00.OEM_APFE zips
+    S66->>APTRA: 3. Server-to-Server: Copy 00.Internal/*Results (XML & HTML)
+    UI->>UI: 4. Pop-up chờ Kỹ Sư request server APTRA chạy xong
+    APTRA->>APTRA: Sinh *.xlsx và summary.csv
+    UI->>APTRA: 5. SFTP Tải trực tiếp các file *.xlsx về Local Windows (temp_report/)
+    UI->>GQ: 6. SFTP Tải file Summary mẫu về Local Windows (temp_report/)
+    UI->>UI: 7. openpyxl trên Windows format 03.*, tạo block mới, lọc Fail lists
+    UI->>GQ: 8. SFTP Upload trực tiếp các file 03.* và Summary.xlsx hoàn thiện
+    UI->>S66: 9. Đồng bộ bản copy sang Server 66 (ResultFinal/)
 ```
 
 ---
-*Tài liệu được khởi tạo và kiểm chứng trực tiếp trên môi trường máy chủ ngày 10/09/2026.*
+*Tài liệu được cập nhật và hoàn thiện ngày 11/09/2026.*

@@ -1,102 +1,52 @@
 # Yêu Cầu Kỹ Thuật Tích Hợp Vào `xTS_Tool` (Integration Requirements)
 
-Tài liệu này xác định chi tiết kiến trúc phần mềm, thiết kế giao diện (UI), các mô-đun xử lý backend và cơ chế kiểm soát lỗi khi tích hợp tính năng **Generate Report** vào công cụ `xTS_Tool` (`D:\Training\Guide\YAK\xts_tool`).
+---
+
+## 1. Thiết kế Giao Diện (UI Form)
+Tích hợp thành **Sub-tab thứ 3** trong `ServerTab`: **"📑 Tạo Báo Cáo Chứng Chỉ (Generate Report)"**.
+
+### Giao diện gồm 3 vùng chức năng:
+1. **Khu vực Cấu hình & Thông tin Metadata (Form Inputs):**
+   - Project (Model) Full: `Nissan_AIVI_Full_12.3_PZ1D_26MY`
+   - Model Short Code: `PZ1D`
+   - SW Version: `YAK.31.03.30`
+   - HW (PCB) Version: `C`
+   - MICOM Version: `v3.27.37`
+   - Date pickers: OEM Delivery, Test Start, Test End
+   - Tester ID: `duc4.pham`
+   - Previous Summary Path + Nút **"🔍 Tự Động Tìm Bản Gần Nhất"** + Nút **"Browse..."**
+2. **Khu vực Điều khiển (Control Actions):**
+   - Nút lớn: **"🚀 Chạy Toàn Bộ Quy Trình (Run All)"**
+   - Bảng danh sách từng bước kèm nút **"Chạy Bước Này"** để hỗ trợ debug từng phần (Step-by-Step).
+   - Nút **"📂 Mở Thư Mục Báo Cáo (Local)"**: Mở ngay folder `temp_report/` trên máy tính để kỹ sư xem trước file Excel.
+3. **Khu vực Tiến độ & Console Nhật ký:**
+   - Progress bar hiển thị % tiến trình tổng.
+   - Cửa sổ Text Console hiển thị log màu (INFO, SUCCESS, WARNING, ERROR).
 
 ---
 
-## 1. Vị trí tích hợp trong `xTS_Tool`
-
-Trong cấu trúc hiện tại của `xts_tool`:
-- `main_window.py`: Giao diện chính chứa các tab (Server, Device Checker, Workflow Runner, Report Collector).
-- `server_tab.py`: Quản lý kết nối SSH đến server test (`10.218.158.66`).
-- `ssh_client.py`: Mô-đun wrapper xử lý kết nối SSH/SFTP (Paramiko).
-- `workflow_runner.py`: Thực thi các lệnh và workflow chạy test.
-
-👉 **Đề xuất tích hợp:**
-Thêm một tab chuyên biệt: **"Generate Report"** (hoặc tích hợp mở rộng trong `report_collector.py`) với giao diện điều khiển quy trình khép kín từ lúc kết thúc bài test đến lúc xuất bản báo cáo lên GOOGLEQA.
-
----
-
-## 2. Thiết kế giao diện (UI Form Specification)
-
-Giao diện cần cung cấp các trường nhập liệu có lưu nhớ (persistent config trong `config.json`):
-
-### A. Cấu hình Máy Chủ & Đường Dẫn (Server & Path Settings)
-1. **Test Runner Server:** `10.218.158.66` (User: `lge`, Password: `***`, Port: `22`)
-2. **Raw Test Results Path:** `/home/lge/GoogleQA/Report_tmp/01.Full/`
-3. **APTRA Server:** `loghub.lge.com` / `10.158.15.144` (User: `aptra`, Password: `***`)
-4. **GOOGLEQA Server:** `loghub.lge.com` / `10.158.15.144` (User: `googleqa`, Password: `***`)
-5. **Previous Summary Template Path:** Đường dẫn file summary mẫu của version trước trên GOOGLEQA (ví dụ: `/home/googleqa/GOOGLEQA/Official_Test_results/Nissan_AIVI_Full_12.3_P61R/YAK.31.06.38.U0M/Nissan_P61R_Google Certification Summary.xlsx`).
-
-### B. Thông tin kiểm thử (Test Run Metadata)
-| Tên trường UI | Nhãn hiển thị | Giá trị mặc định / Gợi ý | Bắt buộc? |
-| :--- | :--- | :--- | :---: |
-| `txt_project_model` | Project (Model) Full | `Nissan_AIVI_Full_12.3_PZ1D_26MY` | Có |
-| `txt_model_code` | Model Short Code | `PZ1D` | Có |
-| `txt_hw_version` | HW (PCB) Version | `C` | Có |
-| `txt_sw_version` | SW Version Full | `YAK.31.03.30` | Có |
-| `txt_micom_version` | MICOM Version | `v3.27.37` | Có |
-| `date_oem_delivery` | OEM Delivery Date | `09/11/2026` (Chọn lịch / DatePicker) | Có |
-| `date_test_start` | Test Start Date | `09/07/2026` (Chọn lịch / DatePicker) | Có |
-| `date_test_end` | Test End Date | `09/10/2026` (Chọn lịch / DatePicker) | Có |
-| `txt_tester` | Tester ID | `duc4.pham` | Có |
-
----
-
-## 3. Thiết kế các Mô-đun Backend (Backend Processing Modules)
-
-Đề xuất tạo mới một mô-đun: `xts_tool/report_pipeline_engine.py` gồm các class/hàm chính:
+## 2. Thiết kế Module Phần Mềm (Software Modules)
 
 ```
 xts_tool/
-├── report_pipeline_engine.py      # [MỚI] Engine chính điều phối 8 bước
-├── excel_report_formatter.py     # [MỚI] Xử lý openpyxl format file 03 và Summary
-└── report_tab.py                 # [MỚI] Giao diện Tab Generate Report
+├── generate_report_tab.py         # Giao diện Sub-tab 3 (PyQt6)
+├── report_pipeline_engine.py      # Bộ điều phối quy trình 9 bước
+└── excel_report_formatter.py     # Module openpyxl xử lý file Excel trên Local
 ```
 
-### Các phương thức chính của `report_pipeline_engine.py`:
-1. `run_report_generator(session)`:
-   - Thực thi `python3 ReportGenerator.py -p ...` trên Server 66.
-   - Theo dõi log thời gian thực.
-2. `sync_raw_to_googleqa(session)`:
-   - Upload toàn bộ `01.Full/*.zip` và các folder test cùng `00.OEM_APFE*.zip` sang GOOGLEQA.
-3. `sync_internal_to_aptra(session)`:
-   - Copy `00.Internal/*Results/` sang thư mục APTRA tương ứng.
-4. `wait_or_trigger_aptra_analysis()`:
-   - Kích hoạt hoặc kiểm tra sự xuất hiện của các file `.xlsx`, `.csv` trên APTRA.
-5. `fetch_aptra_results(session)`:
-   - Tải các file `.xlsx` về Server 66 tại `Report_tmp/ResultFinal/`.
-6. `format_suite_excel_files(metadata)`:
-   - Đổi tên file theo mẫu `03.LGE_{Model}_{Suite}_Result_Final_{SW}.xlsx`.
-   - Mở từng file bằng `openpyxl`:
-     - Điền metadata vào `C3, C4, C5, C6, G2, G3, G4, G6`.
-     - Unmerge `B17:F17`.
-     - Xóa các dòng từ 15 đến 40 (`delete_rows(15, rows_to_delete)`).
-     - Lưu đè file.
-7. `generate_google_certification_summary(metadata, prev_template_path)`:
-   - Kiểm tra file template version trước:
-     - Nếu không có bảng version trước: Hiển thị cảnh báo (Warning Dialog) yêu cầu người dùng cung cấp đường dẫn khác.
-     - Nếu hợp lệ: Copy block cuối, dán tại vị trí mới cách 2 dòng trống.
-   - Quét từng file suite `03.*.xlsx`:
-     - Đọc dãy 7 giá trị từ `D3:J3` của sheet `Test Result_Detail`.
-     - Điền vào dòng test category tương ứng tại sheet `Summary`.
-     - Cập nhật công thức `=SUM(...)`.
-   - Xử lý các case Fail:
-     - Lọc các module có `Failed > 0` từ sheet `Test Result_Detail` ➔ Ghi vào `Nissan Fail Module List`.
-     - Đọc các testcase từ sheet `Failed Test Cases` ➔ Ghi vào `Nissan Fail TestCase List`.
-     - Nếu không có fail: Giữ nguyên khung bảng, để trống dữ liệu.
-8. `publish_final_to_googleqa(session)`:
-   - Upload toàn bộ gói phát hành chính thức lên GOOGLEQA.
+### Chi tiết các bước thực thi trong `report_pipeline_engine.py`:
+1. `step1_run_report_generator()`: Gọi lệnh trên Server 66 qua SSH.
+2. `step2_sync_to_googleqa()`: Chạy `curl` SFTP Server-to-Server đẩy `01.*` và `00.OEM*` sang GOOGLEQA.
+3. `step3_sync_to_aptra()`: Chạy `curl` SFTP Server-to-Server đẩy `00.Internal/*Results` sang APTRA.
+4. `step4_wait_aptra_confirmation()`: Hiển thị Pop-up chờ kỹ sư confirm APTRA chạy xong. Kiểm tra sự xuất hiện của file CSV.
+5. `step5_download_excel_to_local()`: Tải trực tiếp các file `*Result.xlsx` từ APTRA và file Summary mẫu từ GOOGLEQA về Windows `temp_report/`.
+6. `step6_format_suite_reports()`: Gọi `excel_report_formatter` đổi tên `03.`, điền header, unmerge `B17:F17`, xóa hàng 15-40.
+7. `step7_generate_summary_report()`: Trích xuất `D3:J3`, đọc XML của `CTS_Verifier`, tạo block mới, lọc module fail (`Failed > 0`), lọc testcase fail.
+8. `step8_publish_to_googleqa()`: Upload trực tiếp từ Windows lên GOOGLEQA và đồng bộ sang Server 66.
 
 ---
 
-## 4. Xử lý ngoại lệ và An toàn dữ liệu (Fault Tolerance & Data Safety)
-
-1. **Sao lưu trước khi chỉnh sửa (Transactional Backup):**
-   - Mọi file Excel (`03.*.xlsx` và file Summary) đều được tạo bản sao lưu `.bak` trước khi thực hiện chỉnh sửa cấu trúc. Nếu có lỗi xảy ra trong quá trình ghi bằng `openpyxl`, tự động khôi phục từ bản backup.
-2. **Kiểm tra Unmerge trước khi xóa dòng:**
-   - Thư viện `openpyxl` sẽ bị lỗi hoặc làm hỏng file nếu xóa dòng chứa vùng ô bị merge. Engine luôn tự động duyệt qua `ws.merged_cells.ranges` và `unmerge` tất cả các vùng nằm trong phạm vi dòng cần xóa trước khi gọi `delete_rows`.
-3. **Cảnh báo file Summary mẫu không tương thích:**
-   - Nếu file mẫu không chứa đúng định dạng các cột hoặc không tìm thấy bảng version trước, engine dừng ngay và thông báo lỗi rõ ràng cho người dùng, không tự ý ghi đè làm hỏng file.
-4. **Thanh tiến trình & Nhật ký trực quan (Progress Bar & Live Console):**
-   - Mỗi bước trong quy trình 8 bước đều phát tín hiệu (Qt Signal) cập nhật % tiến độ và ghi log chi tiết lên cửa sổ console của UI.
+## 3. Cơ chế An toàn Dữ liệu & Xử lý Ngoại lệ (Safety & Error Handling)
+1. **Kiểm tra Unmerge trước khi xóa dòng:** Luôn tự động unmerge các cell merge nằm trong khoảng dòng cần xóa để tránh hỏng file Excel.
+2. **Xóa sạch dữ liệu lỗi cũ:** Trước khi ghi danh sách fail mới, xóa sạch toàn bộ data từ dòng 3 trở đi của 2 sheet `Nissan Fail Module List` và `Nissan Fail TestCase List`.
+3. **Sao lưu trước khi chỉnh sửa:** Tự động tạo bản copy `.bak` cho mọi file Excel trước khi can thiệp.
