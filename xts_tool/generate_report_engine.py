@@ -250,7 +250,7 @@ class GenerateReportWorker(QThread):
         dest_remote = f"/home/googleqa/GOOGLEQA/Official_Test_results/{p['model_full']}/{p['sw_version']}"
 
         self.log(f"Đích đồng bộ GOOGLEQA: {dest_remote}", "INFO")
-        self.log("Bắt đầu sao chép các gói zip 01.Full, 00.OEM_APFE và 02.* sang GOOGLEQA...", "INFO")
+        self.log("Bắt đầu sao chép các gói zip 01.Full, 00.OEM (APFE & UPLOAD) và 02.* sang GOOGLEQA...", "INFO")
 
         sync_script = f"""bash -c '
 set -e
@@ -259,20 +259,28 @@ USER_PASS="googleqa:googleqa"
 SFTP_BASE="sftp://loghub.lge.com$DEST"
 
 echo "=== 1. Copy 01.Full/*.zip ==="
-for f in "{raw_parent}/01.Full"/*.zip; do
+uploaded_01=""
+for f in "{raw_path}"/*.zip "{raw_parent}/01.Full"/*.zip; do
     if [ -f "$f" ]; then
         fname=$(basename "$f")
-        echo "Uploading $fname ..."
-        curl -s -k -u "$USER_PASS" --ftp-create-dirs -T "$f" "$SFTP_BASE/$fname"
+        if [[ ! "$uploaded_01" =~ "$fname" ]]; then
+            echo "Uploading $fname ..."
+            curl -s -k -u "$USER_PASS" --ftp-create-dirs -T "$f" "$SFTP_BASE/$fname"
+            uploaded_01="$uploaded_01 $fname"
+        fi
     fi
 done
 
-echo "=== 2. Copy 00.OEM_APFE*.zip ==="
-for f in "{raw_parent}"/00.OEM_APFE*.zip; do
+echo "=== 2. Copy 00.OEM*.zip ==="
+uploaded_oem=""
+for f in "{raw_parent}"/00.OEM*.zip "{raw_path}"/00.OEM*.zip "{raw_parent}"/00.OEM_APFE*.zip; do
     if [ -f "$f" ]; then
         fname=$(basename "$f")
-        echo "Uploading $fname ..."
-        curl -s -k -u "$USER_PASS" --ftp-create-dirs -T "$f" "$SFTP_BASE/$fname"
+        if [[ ! "$uploaded_oem" =~ "$fname" ]]; then
+            echo "Uploading $fname ..."
+            curl -s -k -u "$USER_PASS" --ftp-create-dirs -T "$f" "$SFTP_BASE/$fname"
+            uploaded_oem="$uploaded_oem $fname"
+        fi
     fi
 done
 
