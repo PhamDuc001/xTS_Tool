@@ -212,12 +212,12 @@ class ServerTab(QWidget):
         report_layout.setSpacing(6)
 
         # Test Root Path selector
-        troot_group = QGroupBox("Đường Dẫn Test Root & Thao Tác Thu Thập Báo Cáo")
+        troot_group = QGroupBox("Đường Dẫn Test Root & Thao Tác Collect Report")
         troot_layout = QVBoxLayout(troot_group)
         troot_layout.setContentsMargins(8, 8, 8, 8)
         troot_layout.setSpacing(6)
 
-        lbl_note = QLabel("ℹ️ <i>Tính năng Thu Thập & Tổ Chức Báo Cáo hoạt động hoàn toàn qua SSH trên máy chủ, <b>không yêu cầu cắm thiết bị (Device)</b>.</i>")
+        lbl_note = QLabel("ℹ️ <i>Tính năng Collect Report hoạt động hoàn toàn qua SSH trên máy chủ, <b>không yêu cầu cắm thiết bị (Device)</b>.</i>")
         lbl_note.setStyleSheet("color: #64b5f6; font-size: 11px;")
         troot_layout.addWidget(lbl_note)
 
@@ -242,7 +242,7 @@ class ServerTab(QWidget):
         self.btn_scan_preview.clicked.connect(self._scan_report_preview_clicked)
         btn_action_row.addWidget(self.btn_scan_preview)
 
-        self.btn_organize_report = QPushButton("📁 THỰC HIỆN COPY & TỔ CHỨC REPORT")
+        self.btn_organize_report = QPushButton("📁 Collect Report")
         self.btn_organize_report.setEnabled(False)
         self.btn_organize_report.setStyleSheet("background-color: #2e7d32; color: white; font-weight: bold; font-size: 13px; padding: 6px 16px;")
         self.btn_organize_report.clicked.connect(self._organize_report_clicked)
@@ -275,14 +275,14 @@ class ServerTab(QWidget):
         self.table_report_preview.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         report_layout.addWidget(self.table_report_preview)
 
-        self.work_tabs.addTab(report_widget, "📊 Thu Thập & Tổ Chức Báo Cáo (Collect & Report)")
+        self.work_tabs.addTab(report_widget, "📊 Collect Report")
 
         # -------------------------------------------------------------
         # Sub-Tab 3: Generate Google Certification Report
         # -------------------------------------------------------------
         self.generate_report_tab = GenerateReportTab(ssh_manager=self.ssh, config=self.config, parent=self)
         self.generate_report_tab.log_signal.connect(self._append_log)
-        self.work_tabs.addTab(self.generate_report_tab, "📑 Tạo Báo Cáo Chứng Chỉ (Generate Report)")
+        self.work_tabs.addTab(self.generate_report_tab, "📑 Generate Report")
 
         splitter.addWidget(self.work_tabs)
 
@@ -433,7 +433,7 @@ class ServerTab(QWidget):
                     f"{msg}\n\n"
                     "LƯU Ý:\n"
                     "- Yêu cầu kết nối duy nhất 1 device chỉ bắt buộc khi chạy flash/setup trong tab 'Quy Trình Pre-Setup'.\n"
-                    "- Nếu bạn sử dụng tab 'Thu Thập & Tổ Chức Báo Cáo (Collect & Report)', bạn có thể tiếp tục bình thường mà không cần kết nối bất kỳ device nào."
+                    "- Nếu bạn sử dụng tab 'Collect Report' hoặc 'Generate Report', bạn có thể tiếp tục bình thường mà không cần kết nối bất kỳ device nào."
                 )
             return False
 

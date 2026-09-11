@@ -1,7 +1,7 @@
 """
 Generate Report Engine & QThread Worker for xTS Pre-Setup & Report Tool.
-Orchestrates multi-server pipeline across Server 66, APTRA, and GOOGLEQA:
-Step 1: Execute ReportGenerator.py on Server 66
+Orchestrates multi-server pipeline across Connected Server, APTRA, and GOOGLEQA:
+Step 1: Execute ReportGenerator.py on connected server
 Step 2: Sync raw test archives (01.Full/*.zip, 00.OEM_APFE*.zip, 00.Internal/02.*.zip) to GOOGLEQA
 Step 3: Sync analysis inputs (00.Internal/*Results) to APTRA
 Step 4: Request APTRA analysis (interactive confirmation dialog)
@@ -9,7 +9,7 @@ Step 5: Download lightweight result files (*Result.xlsx, template summary, CTS_V
 Step 6: Standardize and clean individual suite reports (03.*.xlsx) using local openpyxl
 Step 7: Update and generate Google Certification Summary workbook
 Step 8: Publish standardized reports and Summary to GOOGLEQA release directory
-Step 9: Sync archive copy to Server 66 (ResultFinal/)
+Step 9: Sync archive copy to connected server (ResultFinal/)
 """
 import os
 import re
@@ -35,7 +35,7 @@ SUITE_KEY_MAPPING = {
 }
 
 STEP_TITLES = [
-    "1. Chạy ReportGenerator trên Server 66",
+    "1. Chạy ReportGenerator",
     "2. Đồng bộ kết quả thô sang GOOGLEQA",
     "3. Đồng bộ dữ liệu sang APTRA",
     "4. Xác nhận phân tích trên APTRA",
@@ -43,7 +43,7 @@ STEP_TITLES = [
     "6. Chuẩn hóa các file Excel con (03.*.xlsx)",
     "7. Tạo & Cập nhật file Summary",
     "8. Phát hành báo cáo lên GOOGLEQA",
-    "9. Lưu trữ bản sao lên Server 66",
+    "9. Lưu trữ bản sao (ResultFinal)",
 ]
 
 
@@ -60,7 +60,7 @@ class GenerateReportWorker(QThread):
 
     def __init__(self, ssh_mgr, params: Dict[str, Any], single_step_idx: Optional[int] = None):
         super().__init__()
-        self.ssh_66 = ssh_mgr
+        self.ssh = ssh_mgr
         self.params = params
         self.single_step_idx = single_step_idx
         self._abort_requested = False
@@ -89,10 +89,10 @@ class GenerateReportWorker(QThread):
         """Worker main execution entry."""
         self.log("=== BẮT ĐẦU QUY TRÌNH TẠO BÁO CÁO CHỨNG CHỈ (GENERATE REPORT) ===", "INFO")
         
-        # Verify SSH connection to Server 66
-        if not self.ssh_66 or not self.ssh_66.is_connected():
-            self.log("[ERROR] Chưa kết nối SSH tới Server 66!", "ERROR")
-            self.workflow_finished_signal.emit(False, "Chưa kết nối SSH tới Server 66.")
+        # Verify SSH connection
+        if not self.ssh or not self.ssh.is_connected():
+            self.log("[ERROR] Chưa kết nối SSH tới máy chủ!", "ERROR")
+            self.workflow_finished_signal.emit(False, "Chưa kết nối SSH tới máy chủ.")
             return
 
         step_methods = [
@@ -104,7 +104,7 @@ class GenerateReportWorker(QThread):
             self._step6_format_single_suites,
             self._step7_update_summary_workbook,
             self._step8_publish_to_googleqa,
-            self._step9_archive_to_server66,
+            self._step9_archive_to_resultfinal,
         ]
 
         if self.single_step_idx is not None:
@@ -205,7 +205,7 @@ class GenerateReportWorker(QThread):
         return client, sftp
 
     # -------------------------------------------------------------------------
-    # Step 1: Execute ReportGenerator.py on Server 66
+    # Step 1: Execute ReportGenerator.py
     # -------------------------------------------------------------------------
     def _step1_run_report_generator(self) -> Tuple[bool, str]:
         p = self._get_paths()
@@ -213,7 +213,7 @@ class GenerateReportWorker(QThread):
         raw_path = p["raw_path"]
 
         self.log(f"Kiểm tra script ReportGenerator tại: {script}", "INFO")
-        c_check, o_check, _ = self.ssh_66.run_command(f"test -f '{script}' && echo EXISTS")
+        c_check, o_check, _ = self.ssh.run_command(f"test -f '{script}' && echo EXISTS")
         if "EXISTS" not in o_check:
             return False, f"Không tìm thấy file kịch bản ReportGenerator tại: {script}"
 
@@ -223,7 +223,7 @@ class GenerateReportWorker(QThread):
         def stream_cb(chunk: str):
             self.log(chunk, "STREAM")
 
-        code, out = self.ssh_66.run_command_stream(
+        code, out = self.ssh.run_command_stream(
             cmd,
             output_callback=stream_cb,
             check_abort=self.is_aborted
@@ -235,7 +235,7 @@ class GenerateReportWorker(QThread):
         # Check expected outputs in raw_parent
         raw_parent = p["raw_parent"]
         chk_cmd = f"test -d '{raw_parent}/00.Internal' && echo OK"
-        _, o_ok, _ = self.ssh_66.run_command(chk_cmd)
+        _, o_ok, _ = self.ssh.run_command(chk_cmd)
         if "OK" not in o_ok:
             return False, f"Không tìm thấy thư mục kết quả '00.Internal' tại: {raw_parent}"
 
@@ -250,9 +250,8 @@ class GenerateReportWorker(QThread):
         dest_remote = f"/home/googleqa/GOOGLEQA/Official_Test_results/{p['model_full']}/{p['sw_version']}"
 
         self.log(f"Đích đồng bộ GOOGLEQA: {dest_remote}", "INFO")
-        self.log("Bắt đầu sao chép các gói zip 01.Full, 00.OEM_APFE và 02.* từ Server 66 sang GOOGLEQA...", "INFO")
+        self.log("Bắt đầu sao chép các gói zip 01.Full, 00.OEM_APFE và 02.* sang GOOGLEQA...", "INFO")
 
-        # Bash script executed on Server 66 using curl SFTP
         sync_script = f"""bash -c '
 set -e
 DEST="{dest_remote}"
@@ -292,7 +291,7 @@ echo "SYNC_GOOGLEQA_COMPLETE"
         def stream_cb(chunk: str):
             self.log(chunk, "STREAM")
 
-        code, out = self.ssh_66.run_command_stream(sync_script, output_callback=stream_cb, check_abort=self.is_aborted)
+        code, out = self.ssh.run_command_stream(sync_script, output_callback=stream_cb, check_abort=self.is_aborted)
         if code != 0 or "SYNC_GOOGLEQA_COMPLETE" not in out:
             return False, f"Lỗi khi đồng bộ sang GOOGLEQA (code: {code})"
 
@@ -309,7 +308,6 @@ echo "SYNC_GOOGLEQA_COMPLETE"
         self.log(f"Đích đồng bộ APTRA: {dest_remote}", "INFO")
         self.log("Bắt đầu sao chép các folder *Results trong 00.Internal sang APTRA...", "INFO")
 
-        # Transfer each file in *Results folders using curl SFTP
         sync_script = f"""bash -c '
 set -e
 DEST="{dest_remote}"
@@ -328,7 +326,7 @@ echo "SYNC_APTRA_COMPLETE"
         def stream_cb(chunk: str):
             self.log(chunk, "STREAM")
 
-        code, out = self.ssh_66.run_command_stream(sync_script, output_callback=stream_cb, check_abort=self.is_aborted)
+        code, out = self.ssh.run_command_stream(sync_script, output_callback=stream_cb, check_abort=self.is_aborted)
         if code != 0 or "SYNC_APTRA_COMPLETE" not in out:
             return False, f"Lỗi khi đồng bộ sang APTRA (code: {code})"
 
@@ -448,21 +446,21 @@ echo "SYNC_APTRA_COMPLETE"
         else:
             return False, f"Không tìm thấy file Summary mẫu tại đường dẫn: {prev_summary_path}"
 
-        # 3. Download CTS_Verifier test_result.xml from Server 66
+        # 3. Download CTS_Verifier test_result.xml
         raw_parent = p["raw_parent"]
         cts_ver_dir = f"{raw_parent}/01.Full/01.CTS_Verifier"
         cts_ver_xml_local = os.path.join(local_work, "cts_verifier_result.xml")
 
-        self.log("Dò tìm file test_result.xml của CTS_Verifier trên Server 66...", "INFO")
+        self.log("Dò tìm file test_result.xml của CTS_Verifier trên máy chủ...", "INFO")
         find_cmd = f"find '{cts_ver_dir}' -name 'test_result.xml' 2>/dev/null | head -n 1"
-        c_ver, o_ver, _ = self.ssh_66.run_command(find_cmd)
+        c_ver, o_ver, _ = self.ssh.run_command(find_cmd)
         if c_ver == 0 and o_ver.strip():
             xml_remote = o_ver.strip()
             self.log(f"Tìm thấy CTS_Verifier XML tại: {xml_remote}", "INFO")
             try:
-                sftp_66 = self.ssh_66.client.open_sftp()
-                sftp_66.get(xml_remote, cts_ver_xml_local)
-                sftp_66.close()
+                sftp_remote = self.ssh.client.open_sftp()
+                sftp_remote.get(xml_remote, cts_ver_xml_local)
+                sftp_remote.close()
                 self.log("Đã tải CTS_Verifier test_result.xml về local.", "SUCCESS")
             except Exception as e:
                 self.log(f"[WARN] Lỗi khi tải CTS_Verifier XML: {e}", "WARN")
@@ -617,28 +615,28 @@ echo "SYNC_APTRA_COMPLETE"
             return False, f"Lỗi khi upload báo cáo lên GOOGLEQA: {str(e)}"
 
     # -------------------------------------------------------------------------
-    # Step 9: Sync archive copy to Server 66 (ResultFinal/)
+    # Step 9: Sync archive copy to ResultFinal/
     # -------------------------------------------------------------------------
-    def _step9_archive_to_server66(self) -> Tuple[bool, str]:
+    def _step9_archive_to_resultfinal(self) -> Tuple[bool, str]:
         p = self._get_paths()
         local_final = p["local_final_dir"]
         raw_parent = p["raw_parent"]
         remote_archive_dir = f"{raw_parent}/ResultFinal"
 
-        self.log(f"Đồng bộ bản sao lưu trữ sang Server 66: {remote_archive_dir} ...", "INFO")
+        self.log(f"Đồng bộ bản sao lưu trữ sang: {remote_archive_dir} ...", "INFO")
         try:
-            # Ensure remote ResultFinal directory exists on 66
-            self.ssh_66.run_command(f"mkdir -p '{remote_archive_dir}'")
-            sftp = self.ssh_66.client.open_sftp()
+            # Ensure remote ResultFinal directory exists
+            self.ssh.run_command(f"mkdir -p '{remote_archive_dir}'")
+            sftp = self.ssh.client.open_sftp()
 
             files_to_copy = [f for f in os.listdir(local_final) if f.endswith(".xlsx")]
             for fname in files_to_copy:
                 lpath = os.path.join(local_final, fname)
                 rpath = f"{remote_archive_dir}/{fname}"
-                self.log(f"  -> Lưu trữ sang 66: {fname}", "INFO")
+                self.log(f"  -> Lưu trữ: {fname}", "INFO")
                 sftp.put(lpath, rpath)
 
             sftp.close()
             return True, f"Đã lưu trữ {len(files_to_copy)} file báo cáo vào: {remote_archive_dir}"
         except Exception as e:
-            return False, f"Lỗi khi sao lưu sang Server 66: {str(e)}"
+            return False, f"Lỗi khi sao lưu: {str(e)}"

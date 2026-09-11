@@ -134,8 +134,8 @@ class GenerateReportTab(QWidget):
         self.date_end.setDate(QDate.currentDate())
         meta_layout.addWidget(self.date_end, 2, 5)
 
-        # Row 3: Raw Path on Server 66
-        meta_layout.addWidget(QLabel("<b>Raw Path (Server 66):</b>"), 3, 0)
+        # Row 3: Raw Path on Connected Server
+        meta_layout.addWidget(QLabel("<b>Raw Path (Server):</b>"), 3, 0)
         self.txt_raw_path = QLineEdit("/home/lge/GoogleQA/Report_tmp/01.Full/")
         meta_layout.addWidget(self.txt_raw_path, 3, 1, 1, 5)
 
@@ -162,7 +162,7 @@ class GenerateReportTab(QWidget):
         ctrl_layout = QHBoxLayout()
         ctrl_layout.setSpacing(10)
 
-        self.btn_run_all = QPushButton("🚀 BẮT ĐẦU CHẠY TOÀN BỘ (Run All)")
+        self.btn_run_all = QPushButton("🚀 Generate Report")
         self.btn_run_all.setStyleSheet("background-color: #2e7d32; color: white; font-weight: bold; font-size: 13px; padding: 8px 18px;")
         self.btn_run_all.clicked.connect(self._run_all)
         ctrl_layout.addWidget(self.btn_run_all)
@@ -210,15 +210,15 @@ class GenerateReportTab(QWidget):
         self.table_steps.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
 
         step_descriptions = [
-            "Chạy ReportGenerator.py -p <raw_path> trên Server 66 để sinh 00.Internal và các file zip",
-            "Upload 01.Full/*.zip, 00.OEM_APFE*.zip, 00.Internal/02.*.zip từ Server 66 sang GOOGLEQA",
+            "Chạy ReportGenerator.py -p <raw_path> để sinh 00.Internal và các file zip",
+            "Upload 01.Full/*.zip, 00.OEM_APFE*.zip, 00.Internal/02.*.zip sang GOOGLEQA",
             "Copy các thư mục 00.Internal/*Results sang /home/aptra/APTRA/{Model}/{Version}/",
             "Hiện Pop-up nhắc kỹ sư kích hoạt APTRA Analysis & chờ xác nhận",
             "Tải *Result.xlsx từ APTRA, Summary mẫu từ GOOGLEQA, và CTS_Verifier XML về Local Windows",
             "Đổi tên file 03.*, điền Header metadata, unmerge B17:F17, xóa rows 15-40 bằng openpyxl",
             "Chèn khối version mới vào sheet Summary, tính =SUM, cập nhật Fail Module & TestCase List",
             "Upload trực tiếp toàn bộ file 03.*.xlsx và file Summary hoàn chỉnh lên server GOOGLEQA",
-            "Lưu trữ một bản sao các file hoàn thiện sang Server 66 tại ResultFinal/"
+            "Lưu trữ một bản sao các file hoàn thiện tại ResultFinal/"
         ]
 
         self.table_steps.setRowCount(len(STEP_TITLES))
@@ -316,7 +316,6 @@ class GenerateReportTab(QWidget):
             base_dir = f"/home/googleqa/GOOGLEQA/Official_Test_results/{model_full}"
             entries = sftp.listdir_attr(base_dir)
 
-            # Sort entries by mtime descending
             version_candidates = []
             for entry in entries:
                 if entry.filename.startswith(".") or entry.filename == current_sw:
@@ -379,9 +378,9 @@ class GenerateReportTab(QWidget):
         except Exception as e:
             QMessageBox.information(self, "Thư mục Báo cáo", f"Đường dẫn thư mục:\n{folder}")
 
-    # -------------------------------------------------------------------------
+    # -------------------------------------------------------------
     # Worker Execution Handlers
-    # -------------------------------------------------------------------------
+    # -------------------------------------------------------------
     def _run_all(self):
         self._start_worker(single_step=None)
 
@@ -390,7 +389,7 @@ class GenerateReportTab(QWidget):
 
     def _start_worker(self, single_step: Optional[int]):
         if not self.ssh_mgr.is_connected():
-            QMessageBox.warning(self, "Chưa kết nối SSH", "Vui lòng kết nối SSH tới Server 66 trước khi chạy báo cáo!")
+            QMessageBox.warning(self, "Chưa kết nối SSH", "Vui lòng kết nối SSH trước khi chạy báo cáo!")
             return
 
         params = self._get_execution_params()
@@ -476,7 +475,7 @@ class GenerateReportTab(QWidget):
             QMessageBox.information(
                 self, "Báo Cáo Thành Công",
                 "🎉 Quá trình tạo và xuất bản báo cáo chứng chỉ Google đã hoàn tất thành công!\n\n"
-                "Báo cáo đã được upload lên GOOGLEQA và lưu trữ trên Server 66."
+                "Báo cáo đã được upload lên GOOGLEQA và lưu trữ tại ResultFinal."
             )
         else:
             self.lbl_status.setText("Trạng thái: ⚠️ Kết thúc có lỗi")
