@@ -509,17 +509,13 @@ def update_summary_workbook(template_path: str, output_path: str,
         if "Nissan Fail Module List" in wb.sheetnames:
             ws_fmod = wb["Nissan Fail Module List"]
 
-            # Clear old data rows cleanly
-            if ws_fmod.max_row >= 3:
-                ws_fmod.delete_rows(3, ws_fmod.max_row - 2)
+            # Only clear DATA (values), preserving existing green fill, font, and borders!
+            for r in range(3, ws_fmod.max_row + 1):
+                for c in range(2, 11):
+                    ws_fmod.cell(r, c).value = None
 
-            med_border = Border(
-                left=Side(style='thin', color='000000'),
-                right=Side(style='thin', color='000000'),
-                top=Side(style='thin', color='000000'),
-                bottom=Side(style='thin', color='000000')
-            )
-            font_arial = Font(name='Arial', size=10.0, bold=False)
+            green_fill = PatternFill(fill_type='solid', start_color='FFD4E9A9', end_color='FFD4E9A9')
+            font_arial = Font(name='Arial', size=11.0, bold=False)
             align_center = Alignment(horizontal='center', vertical='center')
 
             for idx, fmod in enumerate(all_failed_modules):
@@ -536,10 +532,21 @@ def update_summary_workbook(template_path: str, output_path: str,
 
                 for c in range(2, 11):
                     cell = ws_fmod.cell(cur_r, c)
-                    cell.font = font_arial
-                    cell.border = med_border
-                    if c not in [3, 10]:
+                    if not cell.fill or not cell.fill.fill_type:
+                        cell.fill = green_fill
+                    if not cell.font or not cell.font.name:
+                        cell.font = font_arial
+                    if not cell.alignment or not cell.alignment.horizontal:
                         cell.alignment = align_center
+
+                    ref_cell = ws_fmod.cell(3, c)
+                    if ref_cell.border and (not cell.border or not cell.border.top or not cell.border.top.style):
+                        cell.border = Border(
+                            left=ref_cell.border.left,
+                            right=ref_cell.border.right,
+                            top=ref_cell.border.top,
+                            bottom=ref_cell.border.bottom
+                        )
 
         # -------------------------------------------------------------
         # 7. Update Sheet: Nissan Fail TestCase List
@@ -547,9 +554,14 @@ def update_summary_workbook(template_path: str, output_path: str,
         if "Nissan Fail TestCase List" in wb.sheetnames:
             ws_ftc = wb["Nissan Fail TestCase List"]
 
-            # Clear old data rows cleanly
-            if ws_ftc.max_row >= 3:
-                ws_ftc.delete_rows(3, ws_ftc.max_row - 2)
+            # Only clear DATA (values), preserving existing green fill, font, and borders!
+            for r in range(3, ws_ftc.max_row + 1):
+                for c in range(1, 5):
+                    ws_ftc.cell(r, c).value = None
+
+            green_fill = PatternFill(fill_type='solid', start_color='FFD4E9A9', end_color='FFD4E9A9')
+            font_arial = Font(name='Arial', size=11.0, bold=False)
+            align_center = Alignment(horizontal='center', vertical='center')
 
             for idx, ftc in enumerate(all_failed_testcases):
                 cur_r = 3 + idx
@@ -560,7 +572,21 @@ def update_summary_workbook(template_path: str, output_path: str,
 
                 for c in range(1, 5):
                     cell = ws_ftc.cell(cur_r, c)
-                    cell.font = Font(name='Arial', size=10.0, bold=False)
+                    if not cell.fill or not cell.fill.fill_type:
+                        cell.fill = green_fill
+                    if not cell.font or not cell.font.name:
+                        cell.font = font_arial
+                    if not cell.alignment or not cell.alignment.horizontal:
+                        cell.alignment = align_center
+
+                    ref_cell = ws_ftc.cell(3, c)
+                    if ref_cell.border and (not cell.border or not cell.border.top or not cell.border.top.style):
+                        cell.border = Border(
+                            left=ref_cell.border.left,
+                            right=ref_cell.border.right,
+                            top=ref_cell.border.top,
+                            bottom=ref_cell.border.bottom
+                        )
 
         wb.save(output_path)
         return True, "Cập nhật Summary workbook thành công."
