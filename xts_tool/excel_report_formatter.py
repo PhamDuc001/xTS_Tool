@@ -144,7 +144,6 @@ def extract_suite_metrics_from_xlsx(filepath: str, suite_category: str) -> Dict[
         if detail_sheet_name:
             ws_det = wb[detail_sheet_name]
 
-            # 1. Row 3 Summary numbers (D3:J3)
             def safe_int(val, default=0):
                 if val is None:
                     return default
@@ -153,48 +152,69 @@ def extract_suite_metrics_from_xlsx(filepath: str, suite_category: str) -> Dict[
                 except Exception:
                     return default
 
-            p_cnt = safe_int(ws_det.cell(3, 4).value)    # D3: Pass
-            f_cnt = safe_int(ws_det.cell(3, 5).value)    # E3: Fail
-            af_cnt = safe_int(ws_det.cell(3, 6).value)   # F3: Assumption Failure
-            ign_cnt = safe_int(ws_det.cell(3, 7).value)  # G3: Ignored
-            tot_cnt = safe_int(ws_det.cell(3, 8).value)  # H3: Total Tests
-            done_cnt = safe_int(ws_det.cell(3, 9).value) # I3: Module Done
-            tot_mod_cnt = safe_int(ws_det.cell(3, 10).value) # J3: Total Module
+            calc_pass = 0
+            calc_fail = 0
+            calc_af = 0
+            calc_ign = 0
+            calc_tot = 0
+            calc_done = 0
+            calc_tot_mod = 0
 
-            # 2. Extract Failed Modules from row 5 downwards where Failed > 0
+            # Iterate module rows from row 5 downwards
             for r in range(5, ws_det.max_row + 1):
                 mod_name = ws_det.cell(r, 3).value  # Col C: Module Name
-                if not mod_name:
+                if not mod_name or str(mod_name).strip() == "":
                     continue
 
-                v_pass = ws_det.cell(r, 4).value
-                v_fail = ws_det.cell(r, 5).value
-                v_af = ws_det.cell(r, 6).value
-                v_ign = ws_det.cell(r, 7).value
-                v_tot = ws_det.cell(r, 8).value
-                v_done = ws_det.cell(r, 9).value
+                v_pass = safe_int(ws_det.cell(r, 4).value)
+                v_fail = safe_int(ws_det.cell(r, 5).value)
+                v_af = safe_int(ws_det.cell(r, 6).value)
+                v_ign = safe_int(ws_det.cell(r, 7).value)
+                v_tot = safe_int(ws_det.cell(r, 8).value)
+                v_done = str(ws_det.cell(r, 9).value or "").strip().lower()
 
-                fail_num = safe_int(v_fail)
-                if fail_num > 0:
+                calc_pass += v_pass
+                calc_fail += v_fail
+                calc_af += v_af
+                calc_ign += v_ign
+                calc_tot += v_tot
+                calc_tot_mod += 1
+                if v_done in ["true", "1"]:
+                    calc_done += 1
+
+                if v_fail > 0:
                     results["failed_modules"].append({
                         "category": suite_category,
                         "module": str(mod_name).strip(),
-                        "passed": safe_int(v_pass),
-                        "failed": fail_num,
-                        "assumption": safe_int(v_af),
-                        "ignored": safe_int(v_ign),
-                        "total_tests": safe_int(v_tot),
-                        "done": "true" if str(v_done).strip().lower() in ["true", "1"] else "false",
+                        "passed": v_pass,
+                        "failed": v_fail,
+                        "assumption": v_af,
+                        "ignored": v_ign,
+                        "total_tests": v_tot,
+                        "done": "true" if v_done in ["true", "1"] else "false",
                         "remark": ""
                     })
 
-            results["pass"] = p_cnt
-            results["fail"] = f_cnt
-            results["assumption"] = af_cnt
-            results["ignored"] = ign_cnt
-            results["total"] = tot_cnt
-            results["done"] = done_cnt
-            results["total_module"] = tot_mod_cnt
+            # Check if Row 3 has cached numeric values from Excel
+            row3_vals = [ws_det.cell(3, c).value for c in range(4, 11)]
+            has_cached_row3 = any(isinstance(v, (int, float)) and v > 0 for v in row3_vals)
+
+            if has_cached_row3:
+                results["pass"] = safe_int(ws_det.cell(3, 4).value)
+                results["fail"] = safe_int(ws_det.cell(3, 5).value)
+                results["assumption"] = safe_int(ws_det.cell(3, 6).value)
+                results["ignored"] = safe_int(ws_det.cell(3, 7).value)
+                results["total"] = safe_int(ws_det.cell(3, 8).value)
+                results["done"] = safe_int(ws_det.cell(3, 9).value)
+                results["total_module"] = safe_int(ws_det.cell(3, 10).value)
+            else:
+                results["pass"] = calc_pass
+                results["fail"] = calc_fail
+                results["assumption"] = calc_af
+                results["ignored"] = calc_ign
+                results["total"] = calc_tot
+                results["done"] = calc_done
+                results["total_module"] = calc_tot_mod
 
         # 3. Parse Failed Test Cases
         fail_sheet_name = None
@@ -330,9 +350,13 @@ def update_summary_workbook(template_path: str, output_path: str,
         new_block_end = new_block_start + block_height - 1
 
         # 2. Copy structure and styling from previous block
+        row_offset = new_block_start - last_block_start
         for i in range(block_height):
             src_r = last_block_start + i
             dst_r = new_block_start + i
+
+            if src_r in ws_sum.row_dimensions and ws_sum.row_dimensions[src_r].height:
+                ws_sum.row_dimensions[dst_r].height = ws_sum.row_dimensions[src_r].height
 
             for c in range(1, 12):
                 src_cell = ws_sum.cell(src_r, c)
@@ -347,7 +371,8 @@ def update_summary_workbook(template_path: str, output_path: str,
                     )
                     dst_cell.alignment = Alignment(
                         horizontal=src_cell.alignment.horizontal,
-                        vertical=src_cell.alignment.vertical
+                        vertical=src_cell.alignment.vertical,
+                        wrap_text=src_cell.alignment.wrap_text
                     )
                     if src_cell.fill and src_cell.fill.fill_type:
                         dst_cell.fill = PatternFill(
@@ -362,10 +387,36 @@ def update_summary_workbook(template_path: str, output_path: str,
                             top=src_cell.border.top,
                             bottom=src_cell.border.bottom
                         )
+                    if src_cell.number_format:
+                        dst_cell.number_format = src_cell.number_format
 
-                # Copy labels from Cols B and C
-                if c in [2, 3]:
-                    dst_cell.value = src_cell.value
+            # Copy text values
+            c3_val = str(ws_sum.cell(src_r, 3).value or "").strip().lower()
+            if c3_val == "test category":
+                # Header row: copy all column titles from col 3 to 10
+                for c in range(3, 11):
+                    ws_sum.cell(dst_r, c).value = ws_sum.cell(src_r, c).value
+            elif c3_val == "summary":
+                ws_sum.cell(dst_r, 3).value = ws_sum.cell(src_r, 3).value
+            else:
+                if ws_sum.cell(src_r, 2).value is not None:
+                    ws_sum.cell(dst_r, 2).value = ws_sum.cell(src_r, 2).value
+                if ws_sum.cell(src_r, 3).value is not None:
+                    ws_sum.cell(dst_r, 3).value = ws_sum.cell(src_r, 3).value
+
+        # Replicate merged cells within the block (e.g. B6:B16 -> B23:B33)
+        for mr in list(ws_sum.merged_cells.ranges):
+            if mr.min_row >= last_block_start and mr.max_row <= last_block_end:
+                new_min_r = mr.min_row + row_offset
+                new_max_r = mr.max_row + row_offset
+                new_min_c = mr.min_col
+                new_max_c = mr.max_col
+                ws_sum.merge_cells(
+                    start_row=new_min_r, end_row=new_max_r,
+                    start_column=new_min_c, end_column=new_max_c
+                )
+                if new_min_c == 2 and metadata.get("model_code"):
+                    ws_sum.cell(new_min_r, new_min_c).value = f"Nissan {metadata['model_code']}"
 
         # 3. Populate new block metadata
         hw_row = new_block_start
@@ -386,13 +437,13 @@ def update_summary_workbook(template_path: str, output_path: str,
         suite_rows_end = new_block_end - 1      # Last test row (CTS-Verifier)
 
         for r in range(suite_rows_start, suite_rows_end + 1):
-            cell_val = str(ws_sum.cell(r, 3).value or "").strip().lower()
+            cell_val = str(ws_sum.cell(r, 3).value or "").strip()
             if not cell_val:
                 continue
 
             # Determine suite key
-            matched_key = None
             c_clean = _norm_key(cell_val)
+            matched_key = None
             if "atsinteractive" in c_clean or "interactive" in c_clean:
                 matched_key = "atsinteractive"
             elif "atsmultidevice" in c_clean or "multidevice" in c_clean:
@@ -435,20 +486,32 @@ def update_summary_workbook(template_path: str, output_path: str,
         # -------------------------------------------------------------
         # 6. Update Sheet: Nissan Fail Module List
         # -------------------------------------------------------------
+        SUITE_CANONICAL_ORDER = [
+            "ats", "atsincar", "atsinteractive", "atsmultidevice",
+            "bfg", "cts", "ctsongsi", "sts", "vts", "ctsverifier"
+        ]
+        def get_order_key(item):
+            cat = _norm_key(item.get("category", ""))
+            for idx, k in enumerate(SUITE_CANONICAL_ORDER):
+                if k in cat or cat in k:
+                    return idx
+            return 99
+
         all_failed_modules = []
         all_failed_testcases = []
         for s_data in all_suite_metrics.values():
             all_failed_modules.extend(s_data.get("failed_modules", []))
             all_failed_testcases.extend(s_data.get("failed_testcases", []))
 
+        all_failed_modules.sort(key=get_order_key)
+        all_failed_testcases.sort(key=get_order_key)
+
         if "Nissan Fail Module List" in wb.sheetnames:
             ws_fmod = wb["Nissan Fail Module List"]
 
-            # Clear old data rows from row 3 downwards
+            # Clear old data rows cleanly
             if ws_fmod.max_row >= 3:
-                for r in range(3, ws_fmod.max_row + 1):
-                    for c in range(1, 11):
-                        ws_fmod.cell(r, c).value = None
+                ws_fmod.delete_rows(3, ws_fmod.max_row - 2)
 
             med_border = Border(
                 left=Side(style='thin', color='000000'),
@@ -484,11 +547,9 @@ def update_summary_workbook(template_path: str, output_path: str,
         if "Nissan Fail TestCase List" in wb.sheetnames:
             ws_ftc = wb["Nissan Fail TestCase List"]
 
-            # Clear old data rows from row 3 downwards
+            # Clear old data rows cleanly
             if ws_ftc.max_row >= 3:
-                for r in range(3, ws_ftc.max_row + 1):
-                    for c in range(1, 6):
-                        ws_ftc.cell(r, c).value = None
+                ws_ftc.delete_rows(3, ws_ftc.max_row - 2)
 
             for idx, ftc in enumerate(all_failed_testcases):
                 cur_r = 3 + idx

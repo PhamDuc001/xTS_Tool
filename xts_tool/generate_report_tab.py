@@ -402,7 +402,8 @@ class GenerateReportTab(QWidget):
 
     def _open_report_folder(self):
         sw_ver = self.txt_sw_ver.text().strip() or "output"
-        folder = os.path.abspath(os.path.join(os.getcwd(), "temp_report", sw_ver))
+        tool_root = os.path.dirname(os.path.abspath(__file__))
+        folder = os.path.abspath(os.path.join(tool_root, "temp_report", sw_ver))
         os.makedirs(folder, exist_ok=True)
         try:
             os.startfile(folder)

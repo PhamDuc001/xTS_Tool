@@ -182,9 +182,10 @@ class GenerateReportWorker(QThread):
             aptra_path = f"/home/aptra/APTRA/{model_full}/{sw_version}"
         aptra_path = aptra_path.rstrip("/").rstrip("\\")
 
+        tool_root = os.path.dirname(os.path.abspath(__file__))
         local_work_dir = self.params.get(
             "local_work_dir",
-            os.path.abspath(os.path.join(os.getcwd(), "temp_report", sw_version))
+            os.path.abspath(os.path.join(tool_root, "temp_report", sw_version))
         )
 
         return {
@@ -550,6 +551,7 @@ echo "SYNC_APTRA_COMPLETE"
         p = self._get_paths()
         local_work = p["local_work_dir"]
         local_final = p["local_final_dir"]
+        os.makedirs(local_final, exist_ok=True)
 
         template_path = os.path.join(local_work, "template_summary.xlsx")
         summary_fname = f"Nissan_{p['model_code']}_Google Certification Summary_{p['short_sw']}.xlsx"
@@ -576,9 +578,13 @@ echo "SYNC_APTRA_COMPLETE"
         ok, msg = erf.update_summary_workbook(
             template_path=template_path,
             output_path=output_summary_path,
-            hw_version=p["hw_version"],
-            sw_version=p["sw_version"],
-            micom_version=p["micom_version"],
+            metadata={
+                "hw_version": p["hw_version"],
+                "sw_version": p["sw_version"],
+                "micom_version": p["micom_version"],
+                "model_code": p["model_code"],
+                "model_full": p["model_full"],
+            },
             single_suite_files=single_suite_files,
             cts_verifier_xml_path=cts_ver_xml_path
         )
