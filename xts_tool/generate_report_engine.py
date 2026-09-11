@@ -266,48 +266,80 @@ class GenerateReportWorker(QThread):
         dest_remote = p["googleqa_dest_path"]
 
         self.log(f"Đích đồng bộ GOOGLEQA: {dest_remote}", "INFO")
-        self.log("Bắt đầu sao chép các gói zip 01.Full, 00.OEM (APFE & UPLOAD) và 02.* sang GOOGLEQA...", "INFO")
+        self.log("Bắt đầu sao chép song song (4 luồng) các gói zip 01.Full, 00.OEM và 02.* sang GOOGLEQA...", "INFO")
 
         sync_script = f"""bash -c '
 set -e
 DEST="{dest_remote}"
 USER_PASS="googleqa:googleqa"
 SFTP_BASE="sftp://loghub.lge.com$DEST"
+MAX_CONCURRENT=4
+ERR_FLAG="/tmp/sync_gq_err_$$"
+rm -f "$ERR_FLAG"
 
-echo "=== 1. Copy 01.Full/*.zip ==="
-uploaded_01=""
+all_targets=()
 for f in "{raw_path}"/*.zip "{raw_parent}/01.Full"/*.zip; do
     if [ -f "$f" ]; then
-        fname=$(basename "$f")
-        if [[ ! "$uploaded_01" =~ "$fname" ]]; then
-            echo "Uploading $fname ..."
-            curl -s -k -u "$USER_PASS" --ftp-create-dirs -T "$f" "$SFTP_BASE/$fname"
-            uploaded_01="$uploaded_01 $fname"
-        fi
+        all_targets+=("$f")
     fi
 done
 
-echo "=== 2. Copy 00.OEM*.zip ==="
-uploaded_oem=""
 for f in "{raw_parent}"/00.OEM*.zip "{raw_path}"/00.OEM*.zip "{raw_parent}"/00.OEM_APFE*.zip; do
     if [ -f "$f" ]; then
-        fname=$(basename "$f")
-        if [[ ! "$uploaded_oem" =~ "$fname" ]]; then
-            echo "Uploading $fname ..."
-            curl -s -k -u "$USER_PASS" --ftp-create-dirs -T "$f" "$SFTP_BASE/$fname"
-            uploaded_oem="$uploaded_oem $fname"
-        fi
+        all_targets+=("$f")
     fi
 done
 
-echo "=== 3. Copy 00.Internal/02.*.zip ==="
 for f in "{raw_parent}/00.Internal"/02.*.zip; do
     if [ -f "$f" ]; then
-        fname=$(basename "$f")
-        echo "Uploading $fname ..."
-        curl -s -k -u "$USER_PASS" --ftp-create-dirs -T "$f" "$SFTP_BASE/$fname"
+        all_targets+=("$f")
     fi
 done
+
+declare -A seen
+files=()
+for f in "${{all_targets[@]}}"; do
+    fname=$(basename "$f")
+    if [[ -z "${{seen[$fname]}}" ]]; then
+        seen["$fname"]=1
+        files+=("$f")
+    fi
+done
+
+TOTAL=${{#files[@]}}
+if [ "$TOTAL" -eq 0 ]; then
+    echo "CẢNH BÁO: Không tìm thấy file zip nào để upload!"
+else
+    echo "=== Tổng cộng $TOTAL file cần upload sang GOOGLEQA (chạy song song tối đa $MAX_CONCURRENT luồng) ==="
+fi
+
+idx=0
+for f in "${{files[@]}}"; do
+    idx=$((idx + 1))
+    fname=$(basename "$f")
+    size=$(du -h "$f" 2>/dev/null | cut -f1)
+    (
+        echo ">>> [$idx/$TOTAL] Đang upload: $fname ($size) ..."
+        if curl -sS -k -u "$USER_PASS" --ftp-create-dirs -T "$f" "$SFTP_BASE/$fname"; then
+            echo "✓ [$idx/$TOTAL] Hoàn thành: $fname"
+        else
+            echo "✗ [$idx/$TOTAL] Thất bại: $fname" >&2
+            touch "$ERR_FLAG"
+        fi
+    ) &
+
+    while [ $(jobs -r -p | wc -l) -ge $MAX_CONCURRENT ]; do
+        wait -n 2>/dev/null || sleep 0.2
+    done
+done
+
+wait
+
+if [ -f "$ERR_FLAG" ]; then
+    rm -f "$ERR_FLAG"
+    echo "LỖI: Một số file upload lên GOOGLEQA bị thất bại!" >&2
+    exit 1
+fi
 
 echo "SYNC_GOOGLEQA_COMPLETE"
 '"""
