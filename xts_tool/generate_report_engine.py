@@ -36,14 +36,13 @@ SUITE_KEY_MAPPING = {
 
 STEP_TITLES = [
     "1. Chạy ReportGenerator",
-    "2. Đồng bộ kết quả thô sang GOOGLEQA",
-    "3. Đồng bộ dữ liệu sang APTRA",
-    "4. Xác nhận phân tích trên APTRA",
-    "5. Tải file kết quả về Local Windows",
-    "6. Chuẩn hóa các file Excel con (03.*.xlsx)",
-    "7. Tạo & Cập nhật file Summary",
-    "8. Phát hành báo cáo lên GOOGLEQA",
-    "9. Lưu trữ bản sao (ResultFinal)",
+    "2. Đồng bộ kết quả sang GOOGLEQA & APTRA",
+    "3. Xác nhận phân tích trên APTRA",
+    "4. Tải file kết quả về Local Windows",
+    "5. Chuẩn hóa các file Excel con (03.*.xlsx)",
+    "6. Tạo & Cập nhật file Summary",
+    "7. Phát hành báo cáo lên GOOGLEQA",
+    "8. Lưu trữ bản sao (ResultFinal)",
 ]
 
 
@@ -97,14 +96,13 @@ class GenerateReportWorker(QThread):
 
         step_methods = [
             self._step1_run_report_generator,
-            self._step2_sync_to_googleqa,
-            self._step3_sync_to_aptra,
-            self._step4_wait_aptra_confirmation,
-            self._step5_download_to_local,
-            self._step6_format_single_suites,
-            self._step7_update_summary_workbook,
-            self._step8_publish_to_googleqa,
-            self._step9_archive_to_resultfinal,
+            self._step2_sync_to_googleqa_and_aptra,
+            self._step3_wait_aptra_confirmation,
+            self._step4_download_to_local,
+            self._step5_format_single_suites,
+            self._step6_update_summary_workbook,
+            self._step7_publish_to_googleqa,
+            self._step8_archive_to_resultfinal,
         ]
 
         if self.single_step_idx is not None:
@@ -257,141 +255,199 @@ class GenerateReportWorker(QThread):
         return True, "ReportGenerator đã hoàn tất và cấu trúc 00.Internal/ đã sẵn sàng."
 
     # -------------------------------------------------------------------------
-    # Step 2: Sync Raw Results to GOOGLEQA (Server-to-Server)
+    # Step 2: Sync Raw Results to GOOGLEQA & Analysis Data to APTRA (100% Parallel)
     # -------------------------------------------------------------------------
-    def _step2_sync_to_googleqa(self) -> Tuple[bool, str]:
+    def _step2_sync_to_googleqa_and_aptra(self) -> Tuple[bool, str]:
         p = self._get_paths()
         raw_parent = p["raw_parent"]
         raw_path = p["raw_path"]
-        dest_remote = p["googleqa_dest_path"]
+        dest_gq = p["googleqa_dest_path"]
+        dest_aptra = p["aptra_path"]
 
-        self.log(f"Đích đồng bộ GOOGLEQA: {dest_remote}", "INFO")
-        self.log("Bắt đầu sao chép song song (4 luồng) các gói zip 01.Full, 00.OEM và 02.* sang GOOGLEQA...", "INFO")
+        gq_cfg = self.params.get("googleqa_server", {})
+        gq_host = gq_cfg.get("host", "loghub.lge.com")
+        gq_user = gq_cfg.get("username", "googleqa")
+        gq_pass = gq_cfg.get("password", "googleqa")
+
+        aptra_cfg = self.params.get("aptra_server", {})
+        aptra_host = aptra_cfg.get("host", "loghub.lge.com")
+        aptra_user = aptra_cfg.get("username", "aptra")
+        aptra_pass = aptra_cfg.get("password", "aptra")
+
+        self.log(f"Đích GOOGLEQA: {dest_gq} (host: {gq_host})", "INFO")
+        self.log(f"Đích APTRA:    {dest_aptra} (host: {aptra_host})", "INFO")
+        self.log("Bắt đầu đồng bộ song song 100% lên cả GOOGLEQA (file zip) và APTRA (folder *Results)...", "INFO")
 
         sync_script = f"""bash -c '
 set -e
-DEST="{dest_remote}"
-USER_PASS="googleqa:googleqa"
-SFTP_BASE="sftp://loghub.lge.com$DEST"
-MAX_CONCURRENT=4
-ERR_FLAG="/tmp/sync_gq_err_$$"
-rm -f "$ERR_FLAG"
+DEST_GQ="{dest_gq}"
+USER_PASS_GQ="{gq_user}:{gq_pass}"
+SFTP_BASE_GQ="sftp://{gq_host}$DEST_GQ"
+MAX_CONCURRENT_GQ=4
 
-all_targets=()
-for f in "{raw_path}"/*.zip "{raw_parent}/01.Full"/*.zip; do
-    if [ -f "$f" ]; then
-        all_targets+=("$f")
+DEST_APTRA="{dest_aptra}"
+USER_PASS_APTRA="{aptra_user}:{aptra_pass}"
+SFTP_BASE_APTRA="sftp://{aptra_host}$DEST_APTRA"
+MAX_CONCURRENT_APTRA=4
+
+ERR_FLAG_GQ="/tmp/sync_gq_err_$$"
+ERR_FLAG_APTRA="/tmp/sync_aptra_err_$$"
+rm -f "$ERR_FLAG_GQ" "$ERR_FLAG_APTRA"
+
+# =========================================================================
+# Sub-task 1: Upload Raw Zip Files to GOOGLEQA (Concurrent 4 workers)
+# =========================================================================
+(
+    all_targets=()
+    for f in "{raw_path}"/*.zip "{raw_parent}/01.Full"/*.zip; do
+        if [ -f "$f" ]; then
+            all_targets+=("$f")
+        fi
+    done
+
+    for f in "{raw_parent}"/00.OEM*.zip "{raw_path}"/00.OEM*.zip "{raw_parent}"/00.OEM_APFE*.zip; do
+        if [ -f "$f" ]; then
+            all_targets+=("$f")
+        fi
+    done
+
+    for f in "{raw_parent}/00.Internal"/02.*.zip; do
+        if [ -f "$f" ]; then
+            all_targets+=("$f")
+        fi
+    done
+
+    declare -A seen
+    files=()
+    for f in "${{all_targets[@]}}"; do
+        fname=$(basename "$f")
+        if [[ -z "${{seen[$fname]}}" ]]; then
+            seen["$fname"]=1
+            files+=("$f")
+        fi
+    done
+
+    TOTAL=${{#files[@]}}
+    if [ "$TOTAL" -eq 0 ]; then
+        echo "[GOOGLEQA] CẢNH BÁO: Không tìm thấy file zip nào để upload!"
+    else
+        echo "[GOOGLEQA] === Tổng cộng $TOTAL file cần upload sang GOOGLEQA (chạy song song tối đa $MAX_CONCURRENT_GQ luồng) ==="
     fi
-done
 
-for f in "{raw_parent}"/00.OEM*.zip "{raw_path}"/00.OEM*.zip "{raw_parent}"/00.OEM_APFE*.zip; do
-    if [ -f "$f" ]; then
-        all_targets+=("$f")
+    idx=0
+    for f in "${{files[@]}}"; do
+        idx=$((idx + 1))
+        fname=$(basename "$f")
+        size=$(du -h "$f" 2>/dev/null | cut -f1)
+        (
+            echo "[GOOGLEQA] >>> [$idx/$TOTAL] Đang upload: $fname ($size) ..."
+            if curl -sS -k -u "$USER_PASS_GQ" --ftp-create-dirs -T "$f" "$SFTP_BASE_GQ/$fname"; then
+                echo "[GOOGLEQA] ✓ [$idx/$TOTAL] Hoàn thành: $fname"
+            else
+                echo "[GOOGLEQA] ✗ [$idx/$TOTAL] Thất bại: $fname" >&2
+                touch "$ERR_FLAG_GQ"
+            fi
+        ) &
+
+        while [ $(jobs -r -p | wc -l) -ge $MAX_CONCURRENT_GQ ]; do
+            wait -n 2>/dev/null || sleep 0.2
+        done
+    done
+
+    wait
+    echo "[GOOGLEQA] === Hoàn tất đồng bộ các file zip sang GOOGLEQA ==="
+) &
+PID_GQ=$!
+
+# =========================================================================
+# Sub-task 2: Upload *Results Folders to APTRA (Concurrent 4 workers)
+# =========================================================================
+(
+    if [ ! -d "{raw_parent}/00.Internal" ]; then
+        echo "[APTRA] LỖI: Thư mục kết quả {raw_parent}/00.Internal không tồn tại!" >&2
+        touch "$ERR_FLAG_APTRA"
+        exit 1
     fi
-done
 
-for f in "{raw_parent}/00.Internal"/02.*.zip; do
-    if [ -f "$f" ]; then
-        all_targets+=("$f")
+    cd "{raw_parent}/00.Internal"
+    aptra_files=()
+    while IFS= read -r file; do
+        if [ -n "$file" ]; then
+            aptra_files+=("$file")
+        fi
+    done <<EOF
+$(find *Results -type f 2>/dev/null)
+EOF
+
+    TOTAL_APTRA=${{#aptra_files[@]}}
+    if [ "$TOTAL_APTRA" -eq 0 ]; then
+        echo "[APTRA] CẢNH BÁO: Không tìm thấy file trong các thư mục *Results để upload!"
+    else
+        echo "[APTRA] === Tổng cộng $TOTAL_APTRA file trong *Results cần upload sang APTRA (chạy song song tối đa $MAX_CONCURRENT_APTRA luồng) ==="
     fi
-done
 
-declare -A seen
-files=()
-for f in "${{all_targets[@]}}"; do
-    fname=$(basename "$f")
-    if [[ -z "${{seen[$fname]}}" ]]; then
-        seen["$fname"]=1
-        files+=("$f")
-    fi
-done
+    idx_a=0
+    for f in "${{aptra_files[@]}}"; do
+        idx_a=$((idx_a + 1))
+        size=$(du -h "$f" 2>/dev/null | cut -f1)
+        (
+            echo "[APTRA] >>> [$idx_a/$TOTAL_APTRA] Đang upload: $f ($size) ..."
+            if curl -sS -k -u "$USER_PASS_APTRA" --ftp-create-dirs -T "$f" "$SFTP_BASE_APTRA/$f"; then
+                echo "[APTRA] ✓ [$idx_a/$TOTAL_APTRA] Hoàn thành: $f"
+            else
+                echo "[APTRA] ✗ [$idx_a/$TOTAL_APTRA] Thất bại: $f" >&2
+                touch "$ERR_FLAG_APTRA"
+            fi
+        ) &
 
-TOTAL=${{#files[@]}}
-if [ "$TOTAL" -eq 0 ]; then
-    echo "CẢNH BÁO: Không tìm thấy file zip nào để upload!"
-else
-    echo "=== Tổng cộng $TOTAL file cần upload sang GOOGLEQA (chạy song song tối đa $MAX_CONCURRENT luồng) ==="
+        while [ $(jobs -r -p | wc -l) -ge $MAX_CONCURRENT_APTRA ]; do
+            wait -n 2>/dev/null || sleep 0.2
+        done
+    done
+
+    wait
+    echo "[APTRA] === Hoàn tất đồng bộ các thư mục *Results sang APTRA ==="
+) &
+PID_APTRA=$!
+
+# =========================================================================
+# Wait for both background sub-tasks to complete
+# =========================================================================
+wait $PID_GQ || true
+wait $PID_APTRA || true
+
+HAS_ERR=0
+if [ -f "$ERR_FLAG_GQ" ]; then
+    rm -f "$ERR_FLAG_GQ"
+    echo "LỖI: Upload sang server GOOGLEQA có lỗi!" >&2
+    HAS_ERR=1
+fi
+if [ -f "$ERR_FLAG_APTRA" ]; then
+    rm -f "$ERR_FLAG_APTRA"
+    echo "LỖI: Upload sang server APTRA có lỗi!" >&2
+    HAS_ERR=1
 fi
 
-idx=0
-for f in "${{files[@]}}"; do
-    idx=$((idx + 1))
-    fname=$(basename "$f")
-    size=$(du -h "$f" 2>/dev/null | cut -f1)
-    (
-        echo ">>> [$idx/$TOTAL] Đang upload: $fname ($size) ..."
-        if curl -sS -k -u "$USER_PASS" --ftp-create-dirs -T "$f" "$SFTP_BASE/$fname"; then
-            echo "✓ [$idx/$TOTAL] Hoàn thành: $fname"
-        else
-            echo "✗ [$idx/$TOTAL] Thất bại: $fname" >&2
-            touch "$ERR_FLAG"
-        fi
-    ) &
-
-    while [ $(jobs -r -p | wc -l) -ge $MAX_CONCURRENT ]; do
-        wait -n 2>/dev/null || sleep 0.2
-    done
-done
-
-wait
-
-if [ -f "$ERR_FLAG" ]; then
-    rm -f "$ERR_FLAG"
-    echo "LỖI: Một số file upload lên GOOGLEQA bị thất bại!" >&2
+if [ "$HAS_ERR" -eq 1 ]; then
     exit 1
 fi
 
-echo "SYNC_GOOGLEQA_COMPLETE"
+echo "SYNC_ALL_COMPLETE"
 '"""
 
         def stream_cb(chunk: str):
             self.log(chunk, "STREAM")
 
         code, out = self.ssh.run_command_stream(sync_script, output_callback=stream_cb, check_abort=self.is_aborted)
-        if code != 0 or "SYNC_GOOGLEQA_COMPLETE" not in out:
-            return False, f"Lỗi khi đồng bộ sang GOOGLEQA (code: {code})"
+        if code != 0 or "SYNC_ALL_COMPLETE" not in out:
+            return False, f"Lỗi khi đồng bộ sang GOOGLEQA và APTRA (code: {code})"
 
-        return True, f"Đã upload toàn bộ file zip thô sang GOOGLEQA: {dest_remote}"
-
-    # -------------------------------------------------------------------------
-    # Step 3: Sync Analysis Data to APTRA (Server-to-Server)
-    # -------------------------------------------------------------------------
-    def _step3_sync_to_aptra(self) -> Tuple[bool, str]:
-        p = self._get_paths()
-        raw_parent = p["raw_parent"]
-        dest_remote = p["aptra_path"]
-
-        self.log(f"Đích đồng bộ APTRA: {dest_remote}", "INFO")
-        self.log("Bắt đầu sao chép các folder *Results trong 00.Internal sang APTRA...", "INFO")
-
-        sync_script = f"""bash -c '
-set -e
-DEST="{dest_remote}"
-USER_PASS="aptra:aptra"
-SFTP_BASE="sftp://loghub.lge.com$DEST"
-
-cd "{raw_parent}/00.Internal"
-find *Results -type f | while read -r file; do
-    echo "Uploading to APTRA: $file"
-    curl -s -k -u "$USER_PASS" --ftp-create-dirs -T "$file" "$SFTP_BASE/$file"
-done
-
-echo "SYNC_APTRA_COMPLETE"
-'"""
-
-        def stream_cb(chunk: str):
-            self.log(chunk, "STREAM")
-
-        code, out = self.ssh.run_command_stream(sync_script, output_callback=stream_cb, check_abort=self.is_aborted)
-        if code != 0 or "SYNC_APTRA_COMPLETE" not in out:
-            return False, f"Lỗi khi đồng bộ sang APTRA (code: {code})"
-
-        return True, f"Đã đồng bộ đầy đủ dữ liệu phân tích sang APTRA: {dest_remote}"
+        return True, f"Đã upload song song thành công: GOOGLEQA ({dest_gq}) & APTRA ({dest_aptra})"
 
     # -------------------------------------------------------------------------
-    # Step 4: Wait for User Confirmation on APTRA Analysis
+    # Step 3: Wait for User Confirmation on APTRA Analysis
     # -------------------------------------------------------------------------
-    def _step4_wait_aptra_confirmation(self) -> Tuple[bool, str]:
+    def _step3_wait_aptra_confirmation(self) -> Tuple[bool, str]:
         p = self._get_paths()
         prompt_msg = (
             f"Dữ liệu kiểm thử đã được upload thành công sang Server APTRA:\n"
@@ -438,9 +494,9 @@ echo "SYNC_APTRA_COMPLETE"
         return True, "Người dùng đã xác nhận hoàn tất phân tích trên APTRA."
 
     # -------------------------------------------------------------------------
-    # Step 5: Download lightweight result files to Local Windows
+    # Step 4: Download lightweight result files to Local Windows
     # -------------------------------------------------------------------------
-    def _step5_download_to_local(self) -> Tuple[bool, str]:
+    def _step4_download_to_local(self) -> Tuple[bool, str]:
         p = self._get_paths()
         local_raw = p["local_raw_dir"]
         local_work = p["local_work_dir"]
@@ -526,9 +582,9 @@ echo "SYNC_APTRA_COMPLETE"
         return True, "Đã tải toàn bộ các file kết quả và mẫu báo cáo về máy Local thành công."
 
     # -------------------------------------------------------------------------
-    # Step 6: Standardize and clean individual suite reports (03.*.xlsx)
+    # Step 5: Standardize and clean individual suite reports (03.*.xlsx)
     # -------------------------------------------------------------------------
-    def _step6_format_single_suites(self) -> Tuple[bool, str]:
+    def _step5_format_single_suites(self) -> Tuple[bool, str]:
         p = self._get_paths()
         local_raw = p["local_raw_dir"]
         local_final = p["local_final_dir"]
@@ -579,9 +635,9 @@ echo "SYNC_APTRA_COMPLETE"
         return True, f"Đã chuẩn hóa thành công {formatted_count} file báo cáo bộ test (03.*.xlsx)."
 
     # -------------------------------------------------------------------------
-    # Step 7: Update Certification Summary workbook
+    # Step 6: Update Certification Summary workbook
     # -------------------------------------------------------------------------
-    def _step7_update_summary_workbook(self) -> Tuple[bool, str]:
+    def _step6_update_summary_workbook(self) -> Tuple[bool, str]:
         p = self._get_paths()
         local_work = p["local_work_dir"]
         local_final = p["local_final_dir"]
@@ -629,9 +685,9 @@ echo "SYNC_APTRA_COMPLETE"
         return True, f"Đã sinh file Summary hoàn chỉnh: {summary_fname}"
 
     # -------------------------------------------------------------------------
-    # Step 8: Publish standardized reports and Summary to GOOGLEQA
+    # Step 7: Publish standardized reports and Summary to GOOGLEQA
     # -------------------------------------------------------------------------
-    def _step8_publish_to_googleqa(self) -> Tuple[bool, str]:
+    def _step7_publish_to_googleqa(self) -> Tuple[bool, str]:
         p = self._get_paths()
         local_final = p["local_final_dir"]
         googleqa_cfg = self.params.get("googleqa_server", {})
@@ -676,9 +732,9 @@ echo "SYNC_APTRA_COMPLETE"
             return False, f"Lỗi khi upload báo cáo lên GOOGLEQA: {str(e)}"
 
     # -------------------------------------------------------------------------
-    # Step 9: Sync archive copy to ResultFinal/
+    # Step 8: Sync archive copy to ResultFinal/
     # -------------------------------------------------------------------------
-    def _step9_archive_to_resultfinal(self) -> Tuple[bool, str]:
+    def _step8_archive_to_resultfinal(self) -> Tuple[bool, str]:
         p = self._get_paths()
         local_final = p["local_final_dir"]
         raw_parent = p["raw_parent"]

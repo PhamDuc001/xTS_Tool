@@ -227,8 +227,7 @@ class GenerateReportTab(QWidget):
 
         step_descriptions = [
             "Chạy ReportGenerator.py -p <raw_path> để sinh 00.Internal và các file zip",
-            "Upload 01.Full/*.zip, 00.OEM_APFE.zip, 00.OEM_APFE_UPLOAD.zip, và 00.Internal/02.*.zip sang GOOGLEQA",
-            "Copy các thư mục 00.Internal/*Results sang /home/aptra/APTRA/{Model}/{Version}/",
+            "Đồng bộ song song 100%: Upload file zip sang GOOGLEQA (4 luồng) & folder *Results sang APTRA (4 luồng)",
             "Hiện Pop-up nhắc kỹ sư kích hoạt APTRA Analysis & chờ xác nhận",
             "Tải *Result.xlsx từ APTRA, Summary mẫu từ GOOGLEQA, và CTS_Verifier XML về Local Windows",
             "Đổi tên file 03.*, điền Header metadata, unmerge B17:F17, xóa rows 15-40 bằng openpyxl",
