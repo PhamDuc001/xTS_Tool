@@ -230,7 +230,8 @@ class GenerateReportWorker(QThread):
         if "EXISTS" not in o_check:
             return False, f"Không tìm thấy file kịch bản ReportGenerator tại: {script}"
 
-        cmd = f"python3 '{script}' -p '{raw_path}'"
+        # Double protection: pipe 'Y' to stdin AND enable auto_confirm_yn in PTY stream
+        cmd = f"printf 'Y\\n' | python3 '{script}' -p '{raw_path}'"
         self.log(f"Thực thi lệnh: {cmd}", "INFO")
 
         def stream_cb(chunk: str):
@@ -239,7 +240,8 @@ class GenerateReportWorker(QThread):
         code, out = self.ssh.run_command_stream(
             cmd,
             output_callback=stream_cb,
-            check_abort=self.is_aborted
+            check_abort=self.is_aborted,
+            auto_confirm_yn=True
         )
 
         if code != 0:

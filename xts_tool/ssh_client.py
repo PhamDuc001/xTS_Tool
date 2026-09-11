@@ -85,12 +85,15 @@ class SSHManager:
 
     def run_command_stream(self, cmd: str, output_callback: Optional[Callable[[str], None]] = None,
                            check_abort: Optional[Callable[[], bool]] = None,
-                           auto_press_any_key: bool = True) -> Tuple[int, str]:
+                           auto_press_any_key: bool = True,
+                           auto_confirm_yn: bool = False) -> Tuple[int, str]:
         """
         Runs command and streams stdout/stderr chunk by chunk in real-time.
         Can be aborted via check_abort callback.
         If auto_press_any_key is True, automatically sends Enter whenever prompts
         like 'Press any key to continue' appear in the output stream.
+        If auto_confirm_yn is True, automatically sends 'Y' whenever prompts
+        like '(Y/N)' or 'rename + zip folders' appear in the output stream.
         """
         if not self.is_connected():
             if output_callback:
@@ -109,6 +112,13 @@ class SSHManager:
                 re.compile(r"press any (key|button)", re.IGNORECASE),
                 re.compile(r"nhấn phím bất kỳ", re.IGNORECASE)
             ]
+            yn_patterns = [
+                re.compile(r"\(Y/N\)", re.IGNORECASE),
+                re.compile(r"\[Y/N\]", re.IGNORECASE),
+                re.compile(r"\(y/n\)", re.IGNORECASE),
+                re.compile(r"\[y/n\]", re.IGNORECASE),
+                re.compile(r"rename \+ zip folders", re.IGNORECASE),
+            ]
 
             while True:
                 if check_abort and check_abort():
@@ -125,7 +135,7 @@ class SSHManager:
                             full_output.append(data)
                             if output_callback:
                                 output_callback(data)
-                            if auto_press_any_key:
+                            if auto_press_any_key or auto_confirm_yn:
                                 prompt_buffer += data
                     
                     if channel.recv_stderr_ready():
@@ -134,20 +144,37 @@ class SSHManager:
                             full_output.append(err_data)
                             if output_callback:
                                 output_callback(err_data)
-                            if auto_press_any_key:
+                            if auto_press_any_key or auto_confirm_yn:
                                 prompt_buffer += err_data
 
-                    if auto_press_any_key and prompt_buffer:
+                    if (auto_press_any_key or auto_confirm_yn) and prompt_buffer:
                         if len(prompt_buffer) > 2000:
                             prompt_buffer = prompt_buffer[-1000:]
-                        for pat in prompt_patterns:
-                            if pat.search(prompt_buffer):
-                                prompt_buffer = ""
-                                if output_callback:
-                                    output_callback("\n[Auto-confirm] Phát hiện yêu cầu xác nhận ('Press any key'), tự động gửi phím Enter để tiếp tục...\n")
-                                time.sleep(0.5)
-                                channel.send("\n")
-                                break
+
+                        # Check Y/N prompts first
+                        if auto_confirm_yn:
+                            matched_yn = False
+                            for pat in yn_patterns:
+                                if pat.search(prompt_buffer):
+                                    prompt_buffer = ""
+                                    if output_callback:
+                                        output_callback("\n[Auto-confirm] Phát hiện yêu cầu xác nhận '(Y/N)', tự động gửi 'Y' để tiếp tục...\n")
+                                    time.sleep(0.3)
+                                    channel.send("Y\n")
+                                    matched_yn = True
+                                    break
+                            if matched_yn:
+                                continue
+
+                        if auto_press_any_key:
+                            for pat in prompt_patterns:
+                                if pat.search(prompt_buffer):
+                                    prompt_buffer = ""
+                                    if output_callback:
+                                        output_callback("\n[Auto-confirm] Phát hiện yêu cầu xác nhận ('Press any key'), tự động gửi phím Enter để tiếp tục...\n")
+                                    time.sleep(0.5)
+                                    channel.send("\n")
+                                    break
 
                 if channel.exit_status_ready():
                     # Read any remaining output
