@@ -20,6 +20,7 @@ from ssh_client import SSHManager
 from workflow_runner import WorkflowWorker, build_workflow_steps, StepDecision
 from confirm_paths_dialog import ConfirmPathsDialog, ManualAuthDialog, ErrorDecisionDialog
 from report_collector import ReportOrganizeWorker
+from generate_report_tab import GenerateReportTab
 
 ANSI_REGEX = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
 
@@ -276,6 +277,13 @@ class ServerTab(QWidget):
 
         self.work_tabs.addTab(report_widget, "📊 Thu Thập & Tổ Chức Báo Cáo (Collect & Report)")
 
+        # -------------------------------------------------------------
+        # Sub-Tab 3: Generate Google Certification Report
+        # -------------------------------------------------------------
+        self.generate_report_tab = GenerateReportTab(ssh_manager=self.ssh, config=self.config, parent=self)
+        self.generate_report_tab.log_signal.connect(self._append_log)
+        self.work_tabs.addTab(self.generate_report_tab, "📑 Tạo Báo Cáo Chứng Chỉ (Generate Report)")
+
         splitter.addWidget(self.work_tabs)
 
         # -------------------------------------------------------------
@@ -378,6 +386,9 @@ class ServerTab(QWidget):
         if self.report_worker and self.report_worker.isRunning():
             self.report_worker.request_abort()
             self.report_worker.wait(2000)
+        if hasattr(self, 'generate_report_tab') and self.generate_report_tab.worker and self.generate_report_tab.worker.isRunning():
+            self.generate_report_tab.worker.request_abort()
+            self.generate_report_tab.worker.wait(2000)
 
         self.ssh.disconnect()
         self._append_log("Đã ngắt kết nối SSH.", "WARN")
