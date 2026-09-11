@@ -25,32 +25,76 @@ class AptraConfirmDialog(QDialog):
     def __init__(self, message: str, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Xác Nhận Trạng Thái APTRA Analysis")
-        self.setFixedSize(520, 240)
+        self.setFixedSize(580, 280)
         self.setModal(True)
+        self.setStyleSheet("""
+            QDialog {
+                background-color: #1e1e1e;
+                color: #ffffff;
+            }
+        """)
 
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(12)
 
         lbl_icon = QLabel("⏳ <b>ĐANG CHỜ PHÂN TÍCH TRÊN SERVER APTRA</b>")
-        lbl_icon.setStyleSheet("font-size: 14px; color: #1976d2;")
+        lbl_icon.setStyleSheet("font-size: 14px; font-weight: bold; color: #4fc3f7;")
         layout.addWidget(lbl_icon)
 
         txt_info = QTextEdit()
         txt_info.setReadOnly(True)
         txt_info.setText(message)
-        txt_info.setStyleSheet("background-color: #f5f5f5; font-size: 12px; border: 1px solid #ddd;")
+        txt_info.setStyleSheet("""
+            QTextEdit {
+                background-color: #252526;
+                color: #f1f1f1;
+                font-size: 12px;
+                font-family: 'Segoe UI', Consolas, sans-serif;
+                border: 1px solid #3e3e42;
+                border-radius: 6px;
+                padding: 10px;
+            }
+        """)
         layout.addWidget(txt_info)
 
         btn_layout = QHBoxLayout()
+        btn_layout.setSpacing(10)
         btn_layout.addStretch()
 
         self.btn_cancel = QPushButton("⏹ Hủy Bỏ")
-        self.btn_cancel.setStyleSheet("background-color: #d32f2f; color: white; font-weight: bold; padding: 6px 14px;")
+        self.btn_cancel.setStyleSheet("""
+            QPushButton {
+                background-color: #d32f2f;
+                color: white;
+                font-weight: bold;
+                border: none;
+                border-radius: 4px;
+                padding: 8px 18px;
+                font-size: 12px;
+            }
+            QPushButton:hover {
+                background-color: #b71c1c;
+            }
+        """)
         self.btn_cancel.clicked.connect(self.reject)
         btn_layout.addWidget(self.btn_cancel)
 
         self.btn_ok = QPushButton("✅ ĐÃ CHẠY XONG - TIẾP TỤC")
-        self.btn_ok.setStyleSheet("background-color: #2e7d32; color: white; font-weight: bold; padding: 6px 20px;")
+        self.btn_ok.setStyleSheet("""
+            QPushButton {
+                background-color: #2e7d32;
+                color: white;
+                font-weight: bold;
+                border: none;
+                border-radius: 4px;
+                padding: 8px 22px;
+                font-size: 12px;
+            }
+            QPushButton:hover {
+                background-color: #1b5e20;
+            }
+        """)
         self.btn_ok.clicked.connect(self.accept)
         btn_layout.addWidget(self.btn_ok)
 
@@ -233,7 +277,6 @@ class GenerateReportTab(QWidget):
             "Đổi tên file 03.*, điền Header metadata, unmerge B17:F17, xóa rows 15-40 bằng openpyxl",
             "Chèn khối version mới vào sheet Summary, tính =SUM, cập nhật Fail Module & TestCase List",
             "Upload trực tiếp toàn bộ file 03.*.xlsx và file Summary hoàn chỉnh lên server GOOGLEQA",
-            "Lưu trữ một bản sao các file hoàn thiện tại ResultFinal/"
         ]
 
         self.table_steps.setRowCount(len(STEP_TITLES))
@@ -506,7 +549,7 @@ class GenerateReportTab(QWidget):
             QMessageBox.information(
                 self, "Báo Cáo Thành Công",
                 "🎉 Quá trình tạo và xuất bản báo cáo chứng chỉ Google đã hoàn tất thành công!\n\n"
-                "Báo cáo đã được upload lên GOOGLEQA và lưu trữ tại ResultFinal."
+                "Báo cáo và các file bộ test đã được upload chính thức lên server GOOGLEQA."
             )
         else:
             self.lbl_status.setText("Trạng thái: ⚠️ Kết thúc có lỗi")

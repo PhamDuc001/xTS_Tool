@@ -2,14 +2,12 @@
 Generate Report Engine & QThread Worker for xTS Pre-Setup & Report Tool.
 Orchestrates multi-server pipeline across Connected Server, APTRA, and GOOGLEQA:
 Step 1: Execute ReportGenerator.py on connected server
-Step 2: Sync raw test archives (01.Full/*.zip, 00.OEM_APFE*.zip, 00.Internal/02.*.zip) to GOOGLEQA
-Step 3: Sync analysis inputs (00.Internal/*Results) to APTRA
-Step 4: Request APTRA analysis (interactive confirmation dialog)
-Step 5: Download lightweight result files (*Result.xlsx, template summary, CTS_Verifier XML) to Local Windows
-Step 6: Standardize and clean individual suite reports (03.*.xlsx) using local openpyxl
-Step 7: Update and generate Google Certification Summary workbook
-Step 8: Publish standardized reports and Summary to GOOGLEQA release directory
-Step 9: Sync archive copy to connected server (ResultFinal/)
+Step 2: Sync raw archives & analysis inputs to GOOGLEQA & APTRA (100% parallel)
+Step 3: Request APTRA analysis (interactive confirmation dialog)
+Step 4: Download lightweight result files (*Result.xlsx, template summary, CTS_Verifier XML) to Local Windows
+Step 5: Standardize and clean individual suite reports (03.*.xlsx) using local openpyxl
+Step 6: Update and generate Google Certification Summary workbook
+Step 7: Publish standardized reports and Summary to GOOGLEQA release directory
 """
 import os
 import re
@@ -25,8 +23,8 @@ import excel_report_formatter as erf
 
 SUITE_KEY_MAPPING = {
     "ATSResult.xlsx": "ATS",
-    "AtsInteractiveResults.xlsx": "AtsInteractive",
-    "AtsMultideviceResults.xlsx": "AtsMultidevice",
+    "AtsInteractiveResult.xlsx": "AtsInteractive",
+    "AtsMultideviceResult.xlsx": "AtsMultidevice",
     "BFGResult.xlsx": "BFG",
     "CTSResult.xlsx": "CTS",
     "CTSonGSIResult.xlsx": "CTSonGSI",
@@ -42,7 +40,6 @@ STEP_TITLES = [
     "5. Chuẩn hóa các file Excel con (03.*.xlsx)",
     "6. Tạo & Cập nhật file Summary",
     "7. Phát hành báo cáo lên GOOGLEQA",
-    "8. Lưu trữ bản sao (ResultFinal)",
 ]
 
 
@@ -102,7 +99,6 @@ class GenerateReportWorker(QThread):
             self._step5_format_single_suites,
             self._step6_update_summary_workbook,
             self._step7_publish_to_googleqa,
-            self._step8_archive_to_resultfinal,
         ]
 
         if self.single_step_idx is not None:
@@ -730,30 +726,3 @@ echo "SYNC_ALL_COMPLETE"
             return True, f"Đã phát hành báo cáo chính thức lên GOOGLEQA: {remote_dest}"
         except Exception as e:
             return False, f"Lỗi khi upload báo cáo lên GOOGLEQA: {str(e)}"
-
-    # -------------------------------------------------------------------------
-    # Step 8: Sync archive copy to ResultFinal/
-    # -------------------------------------------------------------------------
-    def _step8_archive_to_resultfinal(self) -> Tuple[bool, str]:
-        p = self._get_paths()
-        local_final = p["local_final_dir"]
-        raw_parent = p["raw_parent"]
-        remote_archive_dir = f"{raw_parent}/ResultFinal"
-
-        self.log(f"Đồng bộ bản sao lưu trữ sang: {remote_archive_dir} ...", "INFO")
-        try:
-            # Ensure remote ResultFinal directory exists
-            self.ssh.run_command(f"mkdir -p '{remote_archive_dir}'")
-            sftp = self.ssh.client.open_sftp()
-
-            files_to_copy = [f for f in os.listdir(local_final) if f.endswith(".xlsx")]
-            for fname in files_to_copy:
-                lpath = os.path.join(local_final, fname)
-                rpath = f"{remote_archive_dir}/{fname}"
-                self.log(f"  -> Lưu trữ: {fname}", "INFO")
-                sftp.put(lpath, rpath)
-
-            sftp.close()
-            return True, f"Đã lưu trữ {len(files_to_copy)} file báo cáo vào: {remote_archive_dir}"
-        except Exception as e:
-            return False, f"Lỗi khi sao lưu: {str(e)}"
