@@ -154,6 +154,22 @@ class GenerateReportTab(QWidget):
         self.btn_browse_prev.clicked.connect(self._browse_prev_summary)
         meta_layout.addWidget(self.btn_browse_prev, 4, 7)
 
+        # Row 5: APTRA Path (Server)
+        meta_layout.addWidget(QLabel("<b>APTRA Path:</b>"), 5, 0)
+        self.txt_aptra_path = QLineEdit("/home/aptra/APTRA/Nissan_AIVI_Full_12.3_PZ1D_26MY/YAK.31.03.30")
+        self.txt_aptra_path.setPlaceholderText("Thư mục trên APTRA (sync data & lấy *Result.xlsx)")
+        meta_layout.addWidget(self.txt_aptra_path, 5, 1, 1, 7)
+
+        # Row 6: GOOGLEQA Upload Path (Server)
+        meta_layout.addWidget(QLabel("<b>GOOGLEQA Upload:</b>"), 6, 0)
+        self.txt_googleqa_dest = QLineEdit("/home/googleqa/GOOGLEQA/Official_Test_results/Nissan_AIVI_Full_12.3_PZ1D_26MY/YAK.31.03.30")
+        self.txt_googleqa_dest.setPlaceholderText("Thư mục phát hành trên GOOGLEQA (upload file 00 - 03 & Summary)")
+        meta_layout.addWidget(self.txt_googleqa_dest, 6, 1, 1, 7)
+
+        # Dynamic sync when Model or SW changes
+        self.txt_model_full.textChanged.connect(self._sync_server_paths)
+        self.txt_sw_ver.textChanged.connect(self._sync_server_paths)
+
         main_layout.addWidget(meta_group)
 
         # -------------------------------------------------------------
@@ -248,6 +264,14 @@ class GenerateReportTab(QWidget):
 
         main_layout.addWidget(self.table_steps, 1)
 
+    def _sync_server_paths(self):
+        """Automatically updates APTRA and GOOGLEQA destination paths when Model or SW changes."""
+        model = self.txt_model_full.text().strip()
+        sw = self.txt_sw_ver.text().strip()
+        if model and sw:
+            self.txt_aptra_path.setText(f"/home/aptra/APTRA/{model}/{sw}")
+            self.txt_googleqa_dest.setText(f"/home/googleqa/GOOGLEQA/Official_Test_results/{model}/{sw}")
+
     def _load_config_defaults(self):
         gr_cfg = self.config.get("generate_report", {})
         if gr_cfg.get("model_full"):
@@ -266,6 +290,10 @@ class GenerateReportTab(QWidget):
             self.txt_raw_path.setText(gr_cfg["raw_path"])
         if gr_cfg.get("prev_summary_path"):
             self.txt_prev_summary.setText(gr_cfg["prev_summary_path"])
+        if gr_cfg.get("aptra_path"):
+            self.txt_aptra_path.setText(gr_cfg["aptra_path"])
+        if gr_cfg.get("googleqa_dest_path"):
+            self.txt_googleqa_dest.setText(gr_cfg["googleqa_dest_path"])
 
     def _get_execution_params(self) -> Dict[str, Any]:
         return {
@@ -280,6 +308,8 @@ class GenerateReportTab(QWidget):
             "test_end_date": self.date_end.date().toString("MM/dd/yyyy"),
             "raw_path": self.txt_raw_path.text().strip(),
             "prev_summary_path": self.txt_prev_summary.text().strip(),
+            "aptra_path": self.txt_aptra_path.text().strip(),
+            "googleqa_dest_path": self.txt_googleqa_dest.text().strip(),
             "report_generator_script": self.config.get("generate_report", {}).get(
                 "report_generator_script",
                 "/home/lge/Environment/tools/GenerReport_Update_0623/ReportGenerator.py"
@@ -296,6 +326,7 @@ class GenerateReportTab(QWidget):
         """Connects via SFTP to GOOGLEQA and finds latest version's summary file."""
         model_full = self.txt_model_full.text().strip()
         current_sw = self.txt_sw_ver.text().strip()
+        gq_dest = self.txt_googleqa_dest.text().strip()
 
         self.log_signal.emit("Đang kết nối tới GOOGLEQA để tìm file Summary mẫu của version trước...", "INFO")
         gq_cfg = self.config.get("generate_report", {}).get("googleqa_server", {
@@ -313,7 +344,7 @@ class GenerateReportTab(QWidget):
                 timeout=10
             )
             sftp = client.open_sftp()
-            base_dir = f"/home/googleqa/GOOGLEQA/Official_Test_results/{model_full}"
+            base_dir = os.path.dirname(gq_dest.rstrip("/")).replace("\\", "/") if gq_dest else f"/home/googleqa/GOOGLEQA/Official_Test_results/{model_full}"
             entries = sftp.listdir_attr(base_dir)
 
             version_candidates = []

@@ -172,6 +172,16 @@ class GenerateReportWorker(QThread):
         sw_version = self.params.get("sw_version", "YAK.31.03.30").strip()
         short_sw = sw_version.split(".", 1)[-1] if "." in sw_version else sw_version
 
+        googleqa_dest_path = self.params.get("googleqa_dest_path", "").strip()
+        if not googleqa_dest_path:
+            googleqa_dest_path = f"/home/googleqa/GOOGLEQA/Official_Test_results/{model_full}/{sw_version}"
+        googleqa_dest_path = googleqa_dest_path.rstrip("/").rstrip("\\")
+
+        aptra_path = self.params.get("aptra_path", "").strip()
+        if not aptra_path:
+            aptra_path = f"/home/aptra/APTRA/{model_full}/{sw_version}"
+        aptra_path = aptra_path.rstrip("/").rstrip("\\")
+
         local_work_dir = self.params.get(
             "local_work_dir",
             os.path.abspath(os.path.join(os.getcwd(), "temp_report", sw_version))
@@ -184,6 +194,8 @@ class GenerateReportWorker(QThread):
             "model_code": model_code,
             "sw_version": sw_version,
             "short_sw": short_sw,
+            "googleqa_dest_path": googleqa_dest_path,
+            "aptra_path": aptra_path,
             "hw_version": self.params.get("hw_version", "C").strip(),
             "micom_version": self.params.get("micom_version", "v3.27.37").strip(),
             "oem_delivery_date": self.params.get("oem_delivery_date", "").strip(),
@@ -247,7 +259,8 @@ class GenerateReportWorker(QThread):
     def _step2_sync_to_googleqa(self) -> Tuple[bool, str]:
         p = self._get_paths()
         raw_parent = p["raw_parent"]
-        dest_remote = f"/home/googleqa/GOOGLEQA/Official_Test_results/{p['model_full']}/{p['sw_version']}"
+        raw_path = p["raw_path"]
+        dest_remote = p["googleqa_dest_path"]
 
         self.log(f"Đích đồng bộ GOOGLEQA: {dest_remote}", "INFO")
         self.log("Bắt đầu sao chép các gói zip 01.Full, 00.OEM (APFE & UPLOAD) và 02.* sang GOOGLEQA...", "INFO")
@@ -311,7 +324,7 @@ echo "SYNC_GOOGLEQA_COMPLETE"
     def _step3_sync_to_aptra(self) -> Tuple[bool, str]:
         p = self._get_paths()
         raw_parent = p["raw_parent"]
-        dest_remote = f"/home/aptra/APTRA/{p['model_full']}/{p['sw_version']}"
+        dest_remote = p["aptra_path"]
 
         self.log(f"Đích đồng bộ APTRA: {dest_remote}", "INFO")
         self.log("Bắt đầu sao chép các folder *Results trong 00.Internal sang APTRA...", "INFO")
@@ -347,7 +360,7 @@ echo "SYNC_APTRA_COMPLETE"
         p = self._get_paths()
         prompt_msg = (
             f"Dữ liệu kiểm thử đã được upload thành công sang Server APTRA:\n"
-            f"/home/aptra/APTRA/{p['model_full']}/{p['sw_version']}/\n\n"
+            f"{p['aptra_path']}/\n\n"
             "Vui lòng request kích hoạt chạy công cụ phân tích trên APTRA.\n"
             "Sau khi server APTRA hoàn tất xử lý (sinh các file *Result.xlsx), "
             "hãy nhấn nút [ĐÃ CHẠY XONG - TIẾP TỤC] bên dưới để tiếp tục quy trình."
@@ -374,7 +387,7 @@ echo "SYNC_APTRA_COMPLETE"
 
         try:
             client, sftp = self._open_sftp_connection(host, port, user, password)
-            remote_dir = f"/home/aptra/APTRA/{p['model_full']}/{p['sw_version']}"
+            remote_dir = p["aptra_path"]
             files = sftp.listdir(remote_dir)
             sftp.close()
             client.close()
@@ -411,7 +424,7 @@ echo "SYNC_APTRA_COMPLETE"
                 aptra_cfg.get("username", "aptra"),
                 aptra_cfg.get("password", "aptra")
             )
-            remote_dir = f"/home/aptra/APTRA/{p['model_full']}/{p['sw_version']}"
+            remote_dir = p["aptra_path"]
             files = sftp.listdir(remote_dir)
             downloaded_suites = 0
 
@@ -587,7 +600,7 @@ echo "SYNC_APTRA_COMPLETE"
         port = googleqa_cfg.get("port", 22)
         user = googleqa_cfg.get("username", "googleqa")
         password = googleqa_cfg.get("password", "googleqa")
-        remote_dest = f"/home/googleqa/GOOGLEQA/Official_Test_results/{p['model_full']}/{p['sw_version']}"
+        remote_dest = p["googleqa_dest_path"]
 
         self.log(f"Kết nối SFTP tới GOOGLEQA để xuất bản báo cáo ({host}:{port})...", "INFO")
         try:
