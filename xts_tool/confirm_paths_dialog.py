@@ -92,7 +92,8 @@ class ConfirmPathsDialog(QDialog):
         self.btn_redetect.setEnabled(False)
         self.btn_redetect.setText("Đang quét server...")
         try:
-            detected = self.ssh.detect_binary_paths()
+            root_dir = self.paths.get("binary_root", "/home/lge/Environment/Storage/Binary/")
+            detected = self.ssh.detect_binary_paths(root_dir)
             if detected.get("userdebug_path"):
                 self.txt_userdebug.setText(detected["userdebug_path"])
             if detected.get("user_path"):
@@ -104,8 +105,20 @@ class ConfirmPathsDialog(QDialog):
             self.btn_redetect.setText("🔍 Quét lại tự động từ Server")
 
     def _confirm(self):
-        self.paths["userdebug_path"] = self.txt_userdebug.text().strip()
-        self.paths["user_path"] = self.txt_user.text().strip()
+        ud = self.txt_userdebug.text().strip()
+        u = self.txt_user.text().strip()
+        if ud and u and ud == u:
+            reply = QMessageBox.question(
+                self, "Cảnh báo trùng đường dẫn",
+                "Đường dẫn Userdebug và User đang giống nhau!\nBạn có chắc chắn muốn xác nhận không?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+
+        self.paths["userdebug_path"] = ud
+        self.paths["user_path"] = u
         self.paths["google_key_path"] = self.txt_gkey_path.text().strip()
         self.paths["google_key_script"] = self.txt_gkey_script.text().strip()
         self.paths["mtc_path"] = self.txt_mtc_path.text().strip()

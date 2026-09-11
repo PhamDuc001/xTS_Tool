@@ -216,9 +216,8 @@ class SSHManager:
     def detect_binary_paths(self, root_dir: str = "/home/lge/Environment/Storage/Binary/") -> Dict[str, str]:
         """
         Scans remote server Binary directory using python/bash to find user and userdebug release paths.
-        Looks for:
-        - userdebug: folder containing fastboot_n_fullnavi_blank_flash.sh or matching sit.userdebug
-        - user: folder containing fastboot_n_fullnavi_reflash.sh or matching sit.user
+        - userdebug: folder containing flash scripts with 'userdebug' or '_BDV' (non-PROD) in path
+        - user: folder containing flash scripts with 'user' (not userdebug) or '_PROD' in path
         """
         results = {
             "userdebug_path": "",
@@ -230,41 +229,65 @@ class SSHManager:
             results["details"].append("Lỗi: SSH chưa kết nối.")
             return results
 
-        # 1. Direct search by script name
+        # 1. Advanced search using python on remote host
         find_script = f"""python3 -c '
 import os, glob, json
 
 root = "{root_dir}"
-data = {{"userdebug": "", "user": "", "all_dirs": []}}
+data = {{"userdebug": "", "user": ""}}
+
+userdebug_candidates = []
+user_candidates = []
 
 if os.path.exists(root):
-    # Scan subdirectories
     for dirpath, dirnames, filenames in os.walk(root):
-        if "fastboot_n_fullnavi_blank_flash.sh" in filenames:
-            data["userdebug"] = dirpath
-        if "fastboot_n_fullnavi_reflash.sh" in filenames:
-            data["user"] = dirpath
+        has_blank = "fastboot_n_fullnavi_blank_flash.sh" in filenames
+        has_reflash = "fastboot_n_fullnavi_reflash.sh" in filenames
+        
+        if not (has_blank or has_reflash):
+            continue
             
-    # Fallback to regex if exact script not yet found
-    if not data["userdebug"]:
-        for item in os.listdir(root):
-            full = os.path.join(root, item)
-            if os.path.isdir(full) and "userdebug" in item.lower():
-                sub = glob.glob(os.path.join(full, "RELEASE_*"))
-                if sub:
-                    data["userdebug"] = sub[0]
-                else:
-                    data["userdebug"] = full
+        p_lower = dirpath.lower()
+        if "trash" in p_lower:
+            continue
+            
+        try:
+            mtime = os.path.getmtime(dirpath)
+        except Exception:
+            mtime = 0
+            
+        is_userdebug = ("userdebug" in p_lower) or ("_bdv" in p_lower and "_prod" not in p_lower)
+        is_user = (("user" in p_lower and "userdebug" not in p_lower) or "_prod" in p_lower)
+        
+        if is_userdebug:
+            score = mtime + (1000 if has_blank else 0)
+            userdebug_candidates.append((score, dirpath))
+            
+        if is_user:
+            score = mtime + (1000 if has_reflash else 0)
+            user_candidates.append((score, dirpath))
 
-    if not data["user"]:
-        for item in os.listdir(root):
+    if userdebug_candidates:
+        userdebug_candidates.sort(key=lambda x: x[0], reverse=True)
+        data["userdebug"] = userdebug_candidates[0][1]
+
+    if user_candidates:
+        user_candidates.sort(key=lambda x: x[0], reverse=True)
+        data["user"] = user_candidates[0][1]
+
+    # Fallback if scripts not directly found: search by top-level folder names
+    if not data["userdebug"] or not data["user"]:
+        for item in sorted(os.listdir(root), reverse=True):
             full = os.path.join(root, item)
-            if os.path.isdir(full) and "user" in item.lower() and "userdebug" not in item.lower():
-                sub = glob.glob(os.path.join(full, "RELEASE_*"))
-                if sub:
-                    data["user"] = sub[0]
-                else:
-                    data["user"] = full
+            if not os.path.isdir(full):
+                continue
+            item_lower = item.lower()
+            if not data["userdebug"] and "userdebug" in item_lower:
+                subs = sorted(glob.glob(os.path.join(full, "RELEASE_*")), reverse=True)
+                data["userdebug"] = subs[0] if subs else full
+            if not data["user"] and "user" in item_lower and "userdebug" not in item_lower:
+                subs = sorted(glob.glob(os.path.join(full, "RELEASE_*")), reverse=True)
+                data["user"] = subs[0] if subs else full
 
 print(json.dumps(data))
 '
@@ -278,21 +301,45 @@ print(json.dumps(data))
                 json_end = out.rfind("}") + 1
                 if json_start != -1 and json_end != -1:
                     parsed = json.loads(out[json_start:json_end])
-                    results["userdebug_path"] = parsed.get("userdebug", "")
-                    results["user_path"] = parsed.get("user", "")
+                    results["userdebug_path"] = parsed.get("userdebug", "").replace("\\", "/")
+                    results["user_path"] = parsed.get("user", "").replace("\\", "/")
             except Exception as e:
                 results["details"].append(f"Không phân tích được kết quả JSON: {e}")
 
-        # Fallback to simple find if python script failed
+        # Fallback to bash find if python script failed or did not find
         if not results["userdebug_path"]:
-            c1, o1, _ = self.run_command(f'find {root_dir} -type f -name "fastboot_n_fullnavi_blank_flash.sh" 2>/dev/null | head -n 1')
+            c1, o1, _ = self.run_command(
+                f'find {root_dir} -type f -name "fastboot_n_fullnavi_blank_flash.sh" 2>/dev/null | grep -i "userdebug" | head -n 1'
+            )
             if c1 == 0 and o1.strip():
                 results["userdebug_path"] = os.path.dirname(o1.strip()).replace("\\", "/")
+            else:
+                c1_b, o1_b, _ = self.run_command(
+                    f'find {root_dir} -maxdepth 3 -type d 2>/dev/null | grep -i "userdebug" | head -n 1'
+                )
+                if c1_b == 0 and o1_b.strip():
+                    results["userdebug_path"] = o1_b.strip().replace("\\", "/")
 
         if not results["user_path"]:
-            c2, o2, _ = self.run_command(f'find {root_dir} -type f -name "fastboot_n_fullnavi_reflash.sh" 2>/dev/null | head -n 1')
+            c2, o2, _ = self.run_command(
+                f'find {root_dir} -type f -name "fastboot_n_fullnavi_reflash.sh" 2>/dev/null | grep -i "user" | grep -v -i "userdebug" | head -n 1'
+            )
             if c2 == 0 and o2.strip():
                 results["user_path"] = os.path.dirname(o2.strip()).replace("\\", "/")
+            else:
+                c2_b, o2_b, _ = self.run_command(
+                    f'find {root_dir} -maxdepth 3 -type d 2>/dev/null | grep -i "user" | grep -v -i "userdebug" | head -n 1'
+                )
+                if c2_b == 0 and o2_b.strip():
+                    results["user_path"] = o2_b.strip().replace("\\", "/")
+
+        # Final sanity check: userdebug and user must NOT be identical
+        if results["userdebug_path"] and results["user_path"] and results["userdebug_path"] == results["user_path"]:
+            p_lower = results["userdebug_path"].lower()
+            if "userdebug" in p_lower:
+                results["user_path"] = ""
+            else:
+                results["userdebug_path"] = ""
 
         return results
 
