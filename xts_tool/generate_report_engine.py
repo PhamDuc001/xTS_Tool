@@ -314,29 +314,56 @@ rm -f "$ERR_FLAG_GQ" "$ERR_FLAG_APTRA"
     done
 
     declare -A seen
-    files=()
+    unique_files=()
     for f in "${{all_targets[@]}}"; do
         fname=$(basename "$f")
         if [[ -z "${{seen[$fname]}}" ]]; then
             seen["$fname"]=1
-            files+=("$f")
+            unique_files+=("$f")
         fi
     done
+
+    # Optimization 3: Sort files by size descending (Largest-First Scheduling)
+    files=()
+    while IFS= read -r sz_and_path; do
+        fpath="${{sz_and_path#* }}"
+        if [ -n "$fpath" ]; then
+            files+=("$fpath")
+        fi
+    done < <(for f in "${{unique_files[@]}}"; do
+        stat -c "%s %n" "$f" 2>/dev/null || echo "0 $f"
+    done | sort -rn)
 
     TOTAL=${{#files[@]}}
     if [ "$TOTAL" -eq 0 ]; then
         echo "[GOOGLEQA] CẢNH BÁO: Không tìm thấy file zip nào để upload!"
     else
-        echo "[GOOGLEQA] === Tổng cộng $TOTAL file cần upload sang GOOGLEQA (chạy song song tối đa $MAX_CONCURRENT_GQ luồng) ==="
+        echo "[GOOGLEQA] === Tổng cộng $TOTAL file cần xử lý sang GOOGLEQA (ưu tiên file lớn trước, tối đa $MAX_CONCURRENT_GQ luồng) ==="
     fi
+
+    # Optimization 1: Fetch remote directory listing to skip existing files with matching byte size
+    declare -A remote_sizes_gq
+    while IFS=" " read -r rsize fname; do
+        if [ -n "$fname" ] && [ -n "$rsize" ]; then
+            remote_sizes_gq["$fname"]="$rsize"
+        fi
+    done < <(curl -s -k -u "$USER_PASS_GQ" "$SFTP_BASE_GQ/" 2>/dev/null | awk '"'"'/^-/{{sz=$5; for(i=1;i<=8;i++)$i=""; sub(/^[ \t]+/, ""); print sz, $0}}'"'"')
 
     idx=0
     for f in "${{files[@]}}"; do
         idx=$((idx + 1))
         fname=$(basename "$f")
-        size=$(du -h "$f" 2>/dev/null | cut -f1)
+        local_size=$(stat -c "%s" "$f" 2>/dev/null || echo 0)
+        hsize=$(du -h "$f" 2>/dev/null | cut -f1)
+        rsize="${{remote_sizes_gq[$fname]}}"
+
+        if [ -n "$rsize" ] && [ "$rsize" -eq "$local_size" ] && [ "$local_size" -gt 0 ]; then
+            echo "[GOOGLEQA] ⏩ [$idx/$TOTAL] Bỏ qua (đã có trên server, khớp $local_size byte): $fname"
+            continue
+        fi
+
         (
-            echo "[GOOGLEQA] >>> [$idx/$TOTAL] Đang upload: $fname ($size) ..."
+            echo "[GOOGLEQA] >>> [$idx/$TOTAL] Đang upload: $fname ($hsize) ..."
             if curl -sS -k -u "$USER_PASS_GQ" --ftp-create-dirs -T "$f" "$SFTP_BASE_GQ/$fname"; then
                 echo "[GOOGLEQA] ✓ [$idx/$TOTAL] Hoàn thành: $fname"
             else
@@ -366,28 +393,75 @@ PID_GQ=$!
     fi
 
     cd "{raw_parent}/00.Internal"
-    aptra_files=()
+
+    # Optimization 1: Discover local subdirectories and query remote listing in parallel
+    local_dirs=()
+    while IFS= read -r d; do
+        if [ -n "$d" ]; then
+            local_dirs+=("$d")
+        fi
+    done <<EOF
+$(find *Results -type d 2>/dev/null)
+EOF
+
+    tmp_aptra_list="/tmp/aptra_remote_list_$$"
+    rm -f "$tmp_aptra_list"
+    for d in "${{local_dirs[@]}}"; do
+        (
+            curl -s -k -u "$USER_PASS_APTRA" "$SFTP_BASE_APTRA/$d/" 2>/dev/null | awk -v dir="$d" '"'"'/^-/{{sz=$5; for(i=1;i<=8;i++)$i=""; sub(/^[ \t]+/, ""); print sz, dir"/"$0}}'"'"' >> "$tmp_aptra_list"
+        ) &
+    done
+    wait
+
+    declare -A remote_sizes_aptra
+    while IFS=" " read -r rsz relpath; do
+        if [ -n "$relpath" ] && [ -n "$rsz" ]; then
+            remote_sizes_aptra["$relpath"]="$rsz"
+        fi
+    done < "$tmp_aptra_list"
+    rm -f "$tmp_aptra_list"
+
+    # Optimization 3: Find all files and sort by size descending (Largest-First Scheduling)
+    raw_aptra_files=()
     while IFS= read -r file; do
         if [ -n "$file" ]; then
-            aptra_files+=("$file")
+            raw_aptra_files+=("$file")
         fi
     done <<EOF
 $(find *Results -type f 2>/dev/null)
 EOF
 
+    aptra_files=()
+    while IFS= read -r sz_and_path; do
+        fpath="${{sz_and_path#* }}"
+        if [ -n "$fpath" ]; then
+            aptra_files+=("$fpath")
+        fi
+    done < <(for f in "${{raw_aptra_files[@]}}"; do
+        stat -c "%s %n" "$f" 2>/dev/null || echo "0 $f"
+    done | sort -rn)
+
     TOTAL_APTRA=${{#aptra_files[@]}}
     if [ "$TOTAL_APTRA" -eq 0 ]; then
         echo "[APTRA] CẢNH BÁO: Không tìm thấy file trong các thư mục *Results để upload!"
     else
-        echo "[APTRA] === Tổng cộng $TOTAL_APTRA file trong *Results cần upload sang APTRA (chạy song song tối đa $MAX_CONCURRENT_APTRA luồng) ==="
+        echo "[APTRA] === Tổng cộng $TOTAL_APTRA file trong *Results cần xử lý sang APTRA (ưu tiên file lớn trước, tối đa $MAX_CONCURRENT_APTRA luồng) ==="
     fi
 
     idx_a=0
     for f in "${{aptra_files[@]}}"; do
         idx_a=$((idx_a + 1))
-        size=$(du -h "$f" 2>/dev/null | cut -f1)
+        local_size=$(stat -c "%s" "$f" 2>/dev/null || echo 0)
+        hsize=$(du -h "$f" 2>/dev/null | cut -f1)
+        rsize="${{remote_sizes_aptra[$f]}}"
+
+        if [ -n "$rsize" ] && [ "$rsize" -eq "$local_size" ] && [ "$local_size" -gt 0 ]; then
+            echo "[APTRA] ⏩ [$idx_a/$TOTAL_APTRA] Bỏ qua (đã có trên server, khớp $local_size byte): $f"
+            continue
+        fi
+
         (
-            echo "[APTRA] >>> [$idx_a/$TOTAL_APTRA] Đang upload: $f ($size) ..."
+            echo "[APTRA] >>> [$idx_a/$TOTAL_APTRA] Đang upload: $f ($hsize) ..."
             if curl -sS -k -u "$USER_PASS_APTRA" --ftp-create-dirs -T "$f" "$SFTP_BASE_APTRA/$f"; then
                 echo "[APTRA] ✓ [$idx_a/$TOTAL_APTRA] Hoàn thành: $f"
             else
