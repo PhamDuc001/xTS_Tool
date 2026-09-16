@@ -268,6 +268,12 @@ SUITE_MATCH_PRIORITY = [
   - Không hardcode IP máy chủ và đường dẫn `01.Full`.
   - Cung cấp trường nhập `Remote 01.Full Path` trên giao diện, tự động ghi nhớ vào `config.json`.
   - Script tự động nhận diện thư mục cha của `01.Full/` để làm việc với `00.Internal/` và `00.OEM_APFE/`.
+- **Loại bỏ hoàn toàn cơ chế "Dò Model & SW" và "Tự động đồng bộ đường dẫn":**
+  - *Lý do kỹ thuật:* 
+    1. Dựa vào `test_result.xml` để lấy `sw_version` là không chính xác vì file `02.*` chỉ được tạo ra sau khi chạy xong Bước 1 (`ReportGenerator.py`).
+    2. Việc tự động dò quét và ghi đè SW Version khiến kỹ sư không thể tự kiểm thử với các phiên bản tùy biến (ví dụ: tự đặt 1 version name khác để test thử nghiệm luồng).
+    3. Việc tự động đồng bộ ghi đè `APTRA Path` và `GOOGLEQA Path` khi text thay đổi làm mất các đường dẫn tùy biến mà người dùng đã nhập trước đó.
+  - *Quy chuẩn mới:* Tool tôn trọng 100% các giá trị Model, SW Version, APTRA Path, GOOGLEQA Path do Kỹ sư chỉ định trên giao diện UI, tuyệt đối không can thiệp, không hiển thị pop-up hỏi chuyển version và không tự ý ghi đè.
 
 ---
 
