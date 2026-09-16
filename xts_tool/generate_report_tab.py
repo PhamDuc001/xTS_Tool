@@ -183,6 +183,11 @@ class GenerateReportTab(QWidget):
         self.txt_raw_path = QLineEdit("/home/lge/GoogleQA/Report_tmp/01.Full/")
         meta_layout.addWidget(self.txt_raw_path, 3, 1, 1, 5)
 
+        self.btn_detect_meta = QPushButton("🔍 Dò Model & SW")
+        self.btn_detect_meta.setToolTip("Tự động quét kết quả kiểm thử trên server để cập nhật Model và SW Version")
+        self.btn_detect_meta.clicked.connect(lambda: self._auto_detect_server_metadata(silent=False))
+        meta_layout.addWidget(self.btn_detect_meta, 3, 6, 1, 2)
+
         # Row 4: Previous Summary Template Path
         meta_layout.addWidget(QLabel("<b>Summary Mẫu Trước:</b>"), 4, 0)
         self.txt_prev_summary = QLineEdit()
@@ -452,6 +457,54 @@ class GenerateReportTab(QWidget):
         except Exception as e:
             QMessageBox.information(self, "Thư mục Báo cáo", f"Đường dẫn thư mục:\n{folder}")
 
+    def _auto_detect_server_metadata(self, silent=False):
+        """Auto-detects SW Version and Model from server test results and populates UI fields."""
+        if not self.ssh_mgr or not self.ssh_mgr.is_connected():
+            if not silent:
+                QMessageBox.warning(self, "Chưa kết nối SSH", "Vui lòng kết nối SSH tới máy chủ trước khi dò thông tin!")
+            return
+
+        raw_path = self.txt_raw_path.text().strip()
+        if not raw_path:
+            return
+
+        if not silent:
+            self.log_signal.emit(f"Đang dò tìm thông tin Model và SW Version tại: {raw_path} ...", "INFO")
+
+        try:
+            detected = self.ssh_mgr.detect_report_metadata(raw_path)
+            changes = []
+            if detected.get("sw_version") and detected["sw_version"] != self.txt_sw_ver.text().strip():
+                old_sw = self.txt_sw_ver.text().strip()
+                self.txt_sw_ver.setText(detected["sw_version"])
+                changes.append(f"SW Version: {old_sw} -> {detected['sw_version']}")
+
+            if detected.get("model_full") and detected["model_full"] != self.txt_model_full.text().strip():
+                old_mf = self.txt_model_full.text().strip()
+                self.txt_model_full.setText(detected["model_full"])
+                changes.append(f"Model Full: {old_mf} -> {detected['model_full']}")
+
+            if detected.get("model_code") and detected["model_code"] != self.txt_model_code.text().strip():
+                old_mc = self.txt_model_code.text().strip()
+                self.txt_model_code.setText(detected["model_code"])
+                changes.append(f"Model Code: {old_mc} -> {detected['model_code']}")
+
+            if changes:
+                msg = "Đã tự động nhận diện từ Server:\n• " + "\n• ".join(changes)
+                self.log_signal.emit(f"[TỰ ĐỘNG NHẬN DIỆN] {msg.replace(chr(10), ' | ')}", "SUCCESS")
+                self._sync_server_paths()
+                if not silent:
+                    QMessageBox.information(self, "Đã nhận diện thông tin", msg)
+            else:
+                if not silent:
+                    if detected.get("sw_version"):
+                        QMessageBox.information(self, "Thông tin đã khớp", f"Thông tin Model và SW Version trên giao diện đã khớp chính xác với server ({detected['sw_version']}).")
+                    else:
+                        QMessageBox.warning(self, "Không tìm thấy", f"Không tìm thấy file kết quả hoặc test_result.xml tại:\n{raw_path}")
+        except Exception as e:
+            if not silent:
+                QMessageBox.critical(self, "Lỗi nhận diện", f"Lỗi khi quét thông tin từ server:\n{str(e)}")
+
     # -------------------------------------------------------------
     # Worker Execution Handlers
     # -------------------------------------------------------------
@@ -465,6 +518,33 @@ class GenerateReportTab(QWidget):
         if not self.ssh_mgr.is_connected():
             QMessageBox.warning(self, "Chưa kết nối SSH", "Vui lòng kết nối SSH trước khi chạy báo cáo!")
             return
+
+        # Quick pre-run sanity check on SW version from server
+        try:
+            raw_path = self.txt_raw_path.text().strip()
+            detected = self.ssh_mgr.detect_report_metadata(raw_path)
+            if detected.get("sw_version"):
+                cur_sw = self.txt_sw_ver.text().strip()
+                det_sw = detected["sw_version"]
+                if cur_sw != det_sw:
+                    res = QMessageBox.question(
+                        self,
+                        "Phát hiện SW Version mới",
+                        f"Server phát hiện kết quả bài test là bản SW: <b>{det_sw}</b><br>"
+                        f"Trong khi ô cấu hình hiện tại là: <b>{cur_sw}</b>.<br><br>"
+                        f"Bạn có muốn tự động chuyển sang <b>{det_sw}</b> để tạo báo cáo đúng không?",
+                        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                        QMessageBox.StandardButton.Yes
+                    )
+                    if res == QMessageBox.StandardButton.Yes:
+                        self.txt_sw_ver.setText(det_sw)
+                        if detected.get("model_code"):
+                            self.txt_model_code.setText(detected["model_code"])
+                        if detected.get("model_full"):
+                            self.txt_model_full.setText(detected["model_full"])
+                        self._sync_server_paths()
+        except Exception as e:
+            self.log_signal.emit(f"[WARN] Lỗi kiểm tra nhanh SW version: {e}", "WARN")
 
         params = self._get_execution_params()
         if not params["model_full"] or not params["sw_version"]:
@@ -542,6 +622,18 @@ class GenerateReportTab(QWidget):
     def _on_workflow_finished(self, success: bool, msg: str):
         self.btn_run_all.setEnabled(True)
         self.btn_stop.setEnabled(False)
+
+        if self.worker and hasattr(self.worker, "params"):
+            w_sw = self.worker.params.get("sw_version")
+            if w_sw and w_sw != self.txt_sw_ver.text().strip():
+                self.txt_sw_ver.setText(w_sw)
+            w_mf = self.worker.params.get("model_full")
+            if w_mf and w_mf != self.txt_model_full.text().strip():
+                self.txt_model_full.setText(w_mf)
+            w_mc = self.worker.params.get("model_code")
+            if w_mc and w_mc != self.txt_model_code.text().strip():
+                self.txt_model_code.setText(w_mc)
+            self._sync_server_paths()
 
         if success:
             self.lbl_status.setText("Trạng thái: ✅ Đã hoàn thành toàn bộ")

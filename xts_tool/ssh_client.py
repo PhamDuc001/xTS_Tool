@@ -343,6 +343,64 @@ print(json.dumps(data))
 
         return results
 
+    def detect_report_metadata(self, raw_path: str) -> Dict[str, str]:
+        """
+        Auto-detects SW version, Model full name, and Model code from server test artifacts:
+        1. Checks 02.LGE_*.zip in raw_parent/00.Internal/
+        2. Checks test_result.xml in raw_path
+        Returns: {"sw_version": str, "model_full": str, "model_code": str}
+        """
+        results = {"sw_version": "", "model_full": "", "model_code": ""}
+        if not self.is_connected() or not raw_path:
+            return results
+
+        raw_path = raw_path.rstrip("/").rstrip("\\")
+        raw_parent = os.path.dirname(raw_path).replace("\\", "/") if raw_path.endswith("01.Full") else raw_path
+
+        # 1. Look for generated 02.LGE_*.zip in 00.Internal
+        cmd_zip = f'ls "{raw_parent}/00.Internal"/02.LGE_*.zip 2>/dev/null | head -n 1'
+        c_z, o_z, _ = self.run_command(cmd_zip, timeout=10)
+        if c_z == 0 and o_z.strip():
+            zname = os.path.basename(o_z.strip())
+            # Format: 02.LGE_<model_full>_<suite>_Result_<sw_version>.zip
+            # e.g.: 02.LGE_Nissan_AIVI_Full_12.3_P61R_ATS_Result_YAK.31.04.10.zip
+            m = re.search(r'02\.LGE_(.+?)_[A-Za-z0-9]+_Result_([A-Za-z0-9.]+)\.zip', zname)
+            if m:
+                results["model_full"] = m.group(1).strip()
+                results["sw_version"] = m.group(2).strip()
+                mc_m = re.search(r'(P[0-9]{2}[A-Za-z0-9]|PZ1D|P61R|P33B|P33A)', results["model_full"], re.IGNORECASE)
+                if mc_m:
+                    results["model_code"] = mc_m.group(1).upper()
+
+        # 2. If sw_version not yet found, check test_result.xml in raw_path
+        if not results["sw_version"]:
+            cmd_xml = f'find "{raw_path}" -name "test_result.xml" 2>/dev/null | head -n 1'
+            c_x, o_x, _ = self.run_command(cmd_xml, timeout=15)
+            if c_x == 0 and o_x.strip():
+                xml_path = o_x.strip()
+                cmd_build = f'grep -m 1 "<Build " "{xml_path}" 2>/dev/null'
+                c_b, o_b, _ = self.run_command(cmd_build, timeout=10)
+                if c_b == 0 and o_b.strip():
+                    line = o_b.strip()
+                    sw_m = re.search(r'build_version_incremental="([^"]+)"', line)
+                    if sw_m:
+                        full_sw = sw_m.group(1)
+                        parts = full_sw.split(".")
+                        if len(parts) >= 4 and parts[0] == "YAK":
+                            results["sw_version"] = ".".join(parts[:4])
+                        else:
+                            results["sw_version"] = full_sw[:12]
+
+                    if not results["model_full"]:
+                        dev_m = re.search(r'build_device="([^"]+)"', line)
+                        if dev_m:
+                            results["model_full"] = dev_m.group(1)
+                            mc_m = re.search(r'(P[0-9]{2}[A-Za-z0-9]|PZ1D|P61R|P33B|P33A)', results["model_full"], re.IGNORECASE)
+                            if mc_m:
+                                results["model_code"] = mc_m.group(1).upper()
+
+        return results
+
     def detect_test_roots(self, base_dir: str = "/home/lge/GoogleQA/TestFolder/") -> List[str]:
         """
         Discovers test roots under base_dir (folders containing android-cts, android-ats, android-vts, etc.)

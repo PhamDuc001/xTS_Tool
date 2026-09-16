@@ -22,15 +22,48 @@ import excel_report_formatter as erf
 
 
 SUITE_KEY_MAPPING = {
-    "ATSResult.xlsx": "ATS",
+    # AtsIncar
+    "AtsIncarResult.xlsx": "AtsIncar",
+    "AtsIncarResults.xlsx": "AtsIncar",
+    # AtsInteractive
     "AtsInteractiveResult.xlsx": "AtsInteractive",
+    "AtsInteractiveResults.xlsx": "AtsInteractive",
+    # AtsMultidevice
     "AtsMultideviceResult.xlsx": "AtsMultidevice",
+    "AtsMultideviceResults.xlsx": "AtsMultidevice",
+    # ATS
+    "ATSResult.xlsx": "ATS",
+    "ATSResults.xlsx": "ATS",
+    # BFG
     "BFGResult.xlsx": "BFG",
+    "BFGResults.xlsx": "BFG",
+    # CTS
     "CTSResult.xlsx": "CTS",
+    "CTSResults.xlsx": "CTS",
+    # CTSonGSI
     "CTSonGSIResult.xlsx": "CTSonGSI",
+    "CTSonGSIResults.xlsx": "CTSonGSI",
+    # STS
     "STSResult.xlsx": "STS",
+    "STSResults.xlsx": "STS",
+    # VTS
     "VTSResult.xlsx": "VTS",
+    "VTSResults.xlsx": "VTS",
 }
+
+# Specific suites must be matched before generic substrings (e.g. AtsInteractive before ATS)
+SUITE_MATCH_PRIORITY = [
+    ("atsinteractive", "AtsInteractive"),
+    ("atsmultidevice", "AtsMultidevice"),
+    ("atsincar", "AtsIncar"),
+    ("ctsongsi", "CTSonGSI"),
+    ("ctsverifier", "CTS_Verifier"),
+    ("ats", "ATS"),
+    ("cts", "CTS"),
+    ("bfg", "BFG"),
+    ("sts", "STS"),
+    ("vts", "VTS"),
+]
 
 STEP_TITLES = [
     "1. Chạy ReportGenerator",
@@ -247,6 +280,28 @@ class GenerateReportWorker(QThread):
         _, o_ok, _ = self.ssh.run_command(chk_cmd)
         if "OK" not in o_ok:
             return False, f"Không tìm thấy thư mục kết quả '00.Internal' tại: {raw_parent}"
+
+        # Auto-detect SW version & Model from generated artifacts on server
+        try:
+            detected = self.ssh.detect_report_metadata(raw_path)
+            if detected.get("sw_version"):
+                det_sw = detected["sw_version"]
+                if det_sw != self.params.get("sw_version"):
+                    self.log(f"[AUTO-DETECT] 💡 Phát hiện SW Version mới từ server: {det_sw} (thay thế: {self.params.get('sw_version')})", "SUCCESS")
+                    self.params["sw_version"] = det_sw
+                    self.params["short_sw"] = det_sw.split(".", 1)[-1] if "." in det_sw else det_sw
+            if detected.get("model_full"):
+                det_model = detected["model_full"]
+                if det_model != self.params.get("model_full"):
+                    self.log(f"[AUTO-DETECT] 💡 Phát hiện Model Device từ server: {det_model}", "INFO")
+                    self.params["model_full"] = det_model
+            if detected.get("model_code"):
+                det_mc = detected["model_code"]
+                if det_mc != self.params.get("model_code"):
+                    self.log(f"[AUTO-DETECT] 💡 Phát hiện Model Code từ server: {det_mc}", "INFO")
+                    self.params["model_code"] = det_mc
+        except Exception as e:
+            self.log(f"[WARN] Lỗi khi tự động nhận diện metadata từ server: {e}", "WARN")
 
         return True, "ReportGenerator đã hoàn tất và cấu trúc 00.Internal/ đã sẵn sàng."
 
@@ -678,9 +733,10 @@ echo "SYNC_ALL_COMPLETE"
         for raw_fname in raw_files:
             suite_name = SUITE_KEY_MAPPING.get(raw_fname)
             if not suite_name:
-                for k, v in SUITE_KEY_MAPPING.items():
-                    if v.lower() in raw_fname.lower():
-                        suite_name = v
+                clean_name = re.sub(r'[^a-zA-Z0-9]', '', raw_fname).lower()
+                for key_pattern, sname in SUITE_MATCH_PRIORITY:
+                    if key_pattern in clean_name:
+                        suite_name = sname
                         break
             if not suite_name:
                 self.log(f"[SKIP] Bỏ qua file không xác định được bộ test: {raw_fname}", "WARN")
@@ -722,7 +778,7 @@ echo "SYNC_ALL_COMPLETE"
         for fname in os.listdir(local_final):
             if fname.startswith("03.") and fname.endswith(".xlsx"):
                 fpath = os.path.join(local_final, fname)
-                for sname in ["AtsInteractive", "AtsMultidevice", "ATS", "BFG", "CTSonGSI", "CTS", "STS", "VTS"]:
+                for sname in ["AtsIncar", "AtsInteractive", "AtsMultidevice", "CTSonGSI", "ATS", "BFG", "CTS", "STS", "VTS"]:
                     if f"_{sname}_" in fname:
                         single_suite_files[sname] = fpath
                         break
