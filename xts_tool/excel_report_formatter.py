@@ -32,6 +32,36 @@ def _norm_key(name: str) -> str:
     return re.sub(r'[^a-zA-Z0-9]', '', str(name)).lower()
 
 
+def extract_suite_version_from_c7(c7_val: Any) -> str:
+    """
+    Extracts version string from cell C7 of Test Summary sheet in 03.*.xlsx or XML suite_version.
+    Examples:
+    - 'CTS 14_r13' -> '14_r13'
+    - 'STS 14_sts-r55' -> '14_sts-r55'
+    - 'STS sts-r55' -> 'sts-r55'
+    - 'VTS 14_r13' -> '14_r13'
+    - 'ATS 2026_r2' -> '2026_r2'
+    - '14_r13' -> '14_r13'
+    """
+    if not c7_val:
+        return ""
+    val = str(c7_val).strip()
+    prefixes = [
+        "CTS-VERIFIER", "CTS_VERIFIER", "CTSONGSI",
+        "ATS-IN-CAR", "ATS_INTERACTIVE", "ATS-MULTIDEVICE",
+        "BFG", "CTS", "STS", "VTS", "ATS"
+    ]
+    for prefix in prefixes:
+        if val.upper().startswith(prefix):
+            remainder = val[len(prefix):].strip()
+            if remainder:
+                return remainder
+    parts = val.split(None, 1)
+    if len(parts) > 1:
+        return parts[1].strip()
+    return val
+
+
 def format_single_suite_report(source_path: str, target_path: str,
                                metadata: Dict[str, Any]) -> Tuple[bool, str]:
     """
@@ -123,6 +153,7 @@ def extract_suite_metrics_from_xlsx(filepath: str, suite_category: str) -> Dict[
     """
     results = {
         "category": suite_category,
+        "test_suite_raw": None,
         "pass": 0, "fail": 0, "assumption": 0, "ignored": 0,
         "total": 0, "done": 0, "total_module": 0,
         "failed_modules": [],
@@ -134,6 +165,15 @@ def extract_suite_metrics_from_xlsx(filepath: str, suite_category: str) -> Dict[
 
     try:
         wb = openpyxl.load_workbook(filepath, data_only=True)
+
+        # Extract Test Suite version from cell C7 on 'Test Summary' sheet
+        for s in wb.sheetnames:
+            if "summary" in s.lower():
+                ws_sum_info = wb[s]
+                v_c7 = ws_sum_info["C7"].value
+                if v_c7 is not None:
+                    results["test_suite_raw"] = str(v_c7).strip()
+                break
 
         detail_sheet_name = None
         for s in wb.sheetnames:
@@ -248,6 +288,7 @@ def extract_verifier_metrics_from_xml(xml_path: str) -> Dict[str, Any]:
     """
     metrics = {
         "category": "CTS-Verifier",
+        "test_suite_raw": None,
         "pass": 0, "fail": 0, "assumption": 0, "ignored": 0,
         "total": 0, "done": 1, "total_module": 1,
         "failed_modules": [], "failed_testcases": []
@@ -258,6 +299,9 @@ def extract_verifier_metrics_from_xml(xml_path: str) -> Dict[str, Any]:
     try:
         tree = ET.parse(xml_path)
         root = tree.getroot()
+        s_ver = root.get("suite_version")
+        if s_ver:
+            metrics["test_suite_raw"] = str(s_ver).strip()
         summary_elem = root.find("Summary")
         if summary_elem is not None:
             p = int(summary_elem.get("pass", "0"))
@@ -467,6 +511,14 @@ def update_summary_workbook(template_path: str, output_path: str,
 
             m = norm_metrics.get(matched_key) if matched_key else None
             if m:
+                # Update Test Category name with version from C7 / XML for all test suites
+                raw_suite_c7 = m.get("test_suite_raw")
+                if raw_suite_c7:
+                    ver_str = extract_suite_version_from_c7(raw_suite_c7)
+                    if ver_str:
+                        base_suite_name = cell_val.split("(")[0].strip() if "(" in cell_val else cell_val.strip()
+                        ws_sum.cell(r, 3, f"{base_suite_name} ({ver_str})")
+
                 ws_sum.cell(r, 4, m["pass"])            # Col D: Pass
                 ws_sum.cell(r, 5, m["fail"])            # Col E: Fail
                 ws_sum.cell(r, 6, m["assumption"])      # Col F: Assumption Failure
