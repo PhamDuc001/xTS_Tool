@@ -75,20 +75,22 @@ Tài liệu này ghi lại chi tiết toàn bộ các bước thực thi từ d�
 Xử lý bằng thư viện `openpyxl` trên Python Windows:
 1. **Đổi tên file:**
    - Theo mẫu: `03.LGE_Nissan_AIVI_Full_12.3_{Model_Code}_{Suite}_Result_Final_{SW_Version}.xlsx`
-   - Ví dụ: `03.LGE_Nissan_AIVI_Full_12.3_PZ1D_CTS_Result_Final_YAK.31.03.30.xlsx`.
+   - Ví dụ: `03.LGE_Nissan_AIVI_Full_12.3_PZ1D_CTS_Result_Final_YAK.31.04.10.xlsx`.
+   - *Lưu ý:* Xử lý thống nhất tên file cho cả các suite đặc thù: `AtsIncar`, `AtsInteractive`, `AtsMultidevice`, `BFG`.
 2. **Điền Header (Sheet `Test Summary`):**
    - `C3`: Project (Model) Full (vd: `Nissan_AIVI_Full_12.3_PZ1D_26MY`)
    - `C4`: HW (PCB) version (vd: `C`)
-   - `C5`: SW version (vd: `YAK.31.03.30`)
+   - `C5`: SW version (vd: `YAK.31.04.10`) - **BẮT BUỘC** cập nhật đúng SW version mới nhất cho toàn bộ các file `03.`.
    - `C6`: MICOM version (vd: `v3.27.37`)
-   - `G2`: OEM Delivery (vd: `09/11/2026`)
-   - `G3`: Test Start (vd: `09/07/2026`)
-   - `G4`: Test End (vd: `09/10/2026`)
+   - `G2`: OEM Delivery (vd: `09/11/2026`, ép format text `@`)
+   - `G3`: Test Start (vd: `09/07/2026`, ép format text `@`)
+   - `G4`: Test End (vd: `09/10/2026`, ép format text `@`)
    - `G6`: Tester (vd: `duc4.pham`)
-3. **Làm sạch cấu trúc hàng:**
-   - Unmerge ô `B17:F17`.
-   - Xóa các dòng từ 15 đến 40 (`ws.delete_rows(15, ws.max_row - 14)`).
-   - Bảo toàn công thức `=E12/C12` và các sheet con (`Test Result_Detail`, `Failed Test Cases`).
+   - *Lưu ý ô `C7`:* Chứa chuỗi gốc phiên bản suite (ví dụ: `CTS 14_r13`, `STS 14_sts-r55`, `VTS 14_r13`, `ATS 2026_r2`), được giữ nguyên và dùng làm nguồn trích xuất version sang bảng Summary.
+3. **Làm sạch cấu trúc hàng & An toàn Unmerge:**
+   - Quét và unmerge toàn bộ các merged ranges giao cắt với hàng 15 đến 40 trước khi xóa.
+   - Xóa các dòng thừa từ 15 đến 40 (`ws.delete_rows(15, ws.max_row - 14)`).
+   - Bảo toàn công thức `=E12/C12` tại ô `H12` và các sheet con (`Test Result_Detail`, `Failed Test Cases`).
 
 ---
 
@@ -96,22 +98,31 @@ Xử lý bằng thư viện `openpyxl` trên Python Windows:
 1. **Khối bảng mới trong sheet `Summary`:**
    - Dò tìm khối bảng của version trước (quét ngược từ dưới lên tìm ô `"Summary"` và `"HW (PCB) version"`).
    - Dán khối bảng mới cách 2 dòng trống.
-   - Điền HW version, SW version, MICOM version vào đầu khối bảng.
-2. **Trích xuất 7 chỉ số kiểm thử:**
-   - Với mỗi bộ test (ATS, CTS, BFG, STS, CTSonGSI, AtsInteractive, AtsMultidevice, VTS):
-     - Mở sheet `Test Result_Detail` của file `03.` tương ứng.
-     - Lấy 7 giá trị tại ô `D3:J3`: `Pass`, `Fail`, `Assumption Failure`, `Ignored`, `Total Tests`, `Module Done`, `Total Module`.
-     - Điền vào dòng của suite tương ứng trong sheet `Summary`.
-   - Với `CTS_Verifier`: Đọc trực tiếp từ file XML `01.CTS_Verifier/*/test_result.xml` để lấy số liệu `Pass`, `Total`, `Module Done`.
-   - Dòng cuối cùng của khối bảng: Điền công thức `=SUM(...)`.
-3. **Cập nhật sheet `Nissan Fail Module List`:**
-   - Xóa trắng dữ liệu cũ từ dòng 3 trở đi.
-   - Nếu có suite có `Fail > 0`: Quét sheet `Test Result_Detail` từ dòng 5 trở đi, lọc các module có **`Failed > 0`**, copy 7 cột (`Module`, `Passed`, `Failed`, `Assumption Failure`, `Ignored`, `Total Tests`, `Done`) vào bảng.
-   - Nếu `Fail = 0`: Để trống dữ liệu từ dòng 3, giữ nguyên khung bảng dòng 2.
-4. **Cập nhật sheet `Nissan Fail TestCase List`:**
-   - Xóa trắng dữ liệu cũ từ dòng 3 trở đi.
-   - Nếu có suite có `Fail > 0`: Mở sheet `Failed Test Cases` của file suite đó, copy danh sách testcase fail cụ thể sang bảng với số thứ tự `No` tăng dần (1, 2, 3...).
-   - Nếu `Fail = 0`: Để trống dữ liệu từ dòng 3, giữ nguyên khung bảng dòng 2.
+   - **Cập nhật Metadata khối mới:** Bắt buộc ghi đè `HW version` (Row 19), `SW version` (Row 20 - ví dụ `YAK.31.04.10`, tránh giữ nguyên version cũ sao chép từ template), và `MICOM version` (Row 21).
+2. **Quy tắc đặt tên file Summary đầu ra:**
+   - Bắt buộc lấy theo `Short_SW` mới nhất: `Nissan_{Model_Code}_Google Certification Summary_{Short_SW}.xlsx`.
+   - Ví dụ: Với SW `YAK.31.04.10`, file sinh ra phải là `Nissan_PZ1D_Google Certification Summary_31.04.10.xlsx` (tuyệt đối không giữ tên cũ `31.03.30` của template).
+3. **Đồng bộ động phiên bản vào cột `Test Category` (Cột C):**
+   - Áp dụng cho **TOÀN BỘ 10 Test Suite** (`ATS`, `ATS-In-Car`, `ATS_Interactive`, `ATS-Multidevice`, `BFG`, `CTS`, `CTSonGSI`, `STS`, `VTS`, `CTS-Verifier`).
+   - Nguồn version:
+     - 9 suite thông thường: Trích xuất từ ô `C7` của sheet `Test Summary` trong file `03.*.xlsx` tương ứng.
+     - `CTS-Verifier`: Trích xuất từ thuộc tính `suite_version` của thẻ `<Result>` trong XML.
+   - Format: `<Base_Suite_Name> (<Version>)`, ví dụ: `CTS (14_r13)`, `STS (14_sts-r55)`, `VTS (14_r13)`, `ATS (2026_r2)`, `CTS-Verifier (14_r13)`.
+4. **Trích xuất 7 chỉ số kiểm thử & Fallback tính toán:**
+   - Mở sheet `Test Result_Detail` của file `03.` tương ứng.
+   - Kiểm tra ô `D3:J3`: Nếu có giá trị số hợp lệ $> 0$, sử dụng trực tiếp.
+   - **Cơ chế Fallback:** Nếu ô `D3:J3` là `None` (do công thức chưa được tính toán sẵn khi lưu trên Linux), tự động duyệt từ hàng 5 đến cuối bảng để tính tổng cộng dồn từng cột (Pass, Fail, Assumption, Ignored, Total Tests, Module Done, Total Module).
+   - Với `CTS_Verifier`: Đọc thẻ `<Summary>` trong file XML `test_result.xml` để lấy `Pass`, `Total`, `Module Done`.
+   - Nếu suite không chạy (Partial Run): Đặt các ô D:J là `None` (ô trống), không điền 0.
+   - Dòng cuối cùng của khối bảng: Điền công thức `=SUM(D...:D...)` đến `=SUM(J...:J...)`.
+5. **Cập nhật sheet `Nissan Fail Module List`:**
+   - Xóa sạch dữ liệu cũ từ **dòng 3 trở đi** (`ws.delete_rows(3, ws.max_row - 2)`), giữ nguyên hàng 1 và hàng 2 (Header và khung bảng).
+   - Nếu có module có `Failed > 0`: Ghi danh sách module lỗi gồm 7 cột chỉ số vào bảng.
+   - Nếu không có lỗi (`Fail = 0`): Giữ nguyên bảng trắng từ dòng 3 trở đi.
+6. **Cập nhật sheet `Nissan Fail TestCase List`:**
+   - Xóa sạch dữ liệu cũ từ **dòng 3 trở đi** (`ws.delete_rows(3, ws.max_row - 2)`), giữ nguyên hàng 1 và hàng 2.
+   - Nếu có lỗi: Đọc danh sách từ sheet `Failed Test Cases` của từng file suite, đánh số thứ tự liên tục `No` (1, 2, 3...) và ghi `Test Category`, `Module`, `Test Case`.
+   - Nếu không có lỗi: Giữ nguyên bảng trắng từ dòng 3 trở đi.
 
 ---
 
@@ -119,6 +130,7 @@ Xử lý bằng thư viện `openpyxl` trên Python Windows:
 - `xTS_Tool` kết nối SFTP trực tiếp từ Windows lên GOOGLEQA:
   Thư mục: `/home/googleqa/GOOGLEQA/Official_Test_results/{Project_Model}/{SW_Version}/`
 - Upload toàn bộ:
-  1. Các file Excel chi tiết `03.LGE_..._Result_Final_...xlsx`.
+  1. Các file Excel chi tiết `03.LGE_..._Result_Final_...xlsx` (đủ cả 9 bài test nếu có).
   2. File Summary chính thức: `Nissan_{Model_Code}_Google Certification Summary_{Short_SW}.xlsx`.
-- Đồng thời copy 1 bản lưu trữ sang Server 66 (`/home/lge/GoogleQA/Report_tmp/ResultFinal/`).
+- Đồng thời copy 1 bản lưu trữ sang thư mục `ResultFinal/` trên máy chủ test runner (hỗ trợ cấu hình linh hoạt Server 66, Server 44...).
+- *Tham khảo chi tiết các trường hợp biên tại [05_CRITICAL_NOTES_AND_EDGE_CASES.md](./05_CRITICAL_NOTES_AND_EDGE_CASES.md).*

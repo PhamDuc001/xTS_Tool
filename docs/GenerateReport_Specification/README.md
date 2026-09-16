@@ -13,6 +13,7 @@ Tài liệu này được biên soạn đầy đủ và hoàn thiện sau quá t
 | **03** | [**`02_STEP_BY_STEP_PIPELINE.md`**](./02_STEP_BY_STEP_PIPELINE.md) | **Quy trình chi tiết 9 bước thực thi:** Lệnh gọi `ReportGenerator.py`, cơ chế pop-up APTRA, tải trực tiếp về Local, xử lý Excel và xuất bản lên GOOGLEQA. |
 | **04** | [**`03_DATA_DICTIONARY_AND_FORMATS.md`**](./03_DATA_DICTIONARY_AND_FORMATS.md) | **Từ điển dữ liệu & bảng tính mẫu Excel:** Tọa độ chính xác từng ô Excel (`C3:C6`, `G2:G6`), cấu trúc sheet Summary, lọc lỗi `Failed > 0`, bảng demo thực tế từ build `YAK.31.03.30`. |
 | **05** | [**`04_INTEGRATION_REQUIREMENTS_XTS_TOOL.md`**](./04_INTEGRATION_REQUIREMENTS_XTS_TOOL.md) | **Yêu cầu kỹ thuật tích hợp vào `xTS_Tool`:** Thiết kế Sub-tab 3 `Generate Report`, các class engine backend, chế độ Run All & Step-by-Step, cơ chế an toàn dữ liệu. |
+| **06** | [**`05_CRITICAL_NOTES_AND_EDGE_CASES.md`**](./05_CRITICAL_NOTES_AND_EDGE_CASES.md) | **Cẩm nang các điểm lưu ý sống còn & xử lý biên thực tế:** Toàn bộ phát hiện kỹ thuật, đồng bộ version động cho 10 suite từ ô C7/XML, quy tắc đặt tên file Summary theo SW mới, fallback tính toán D3:J3, tránh lỗi unmerge và hỗ trợ đa máy chủ (Server 44/66). |
 
 ---
 

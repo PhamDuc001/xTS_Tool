@@ -58,7 +58,7 @@ flowchart TD
 ### Thông tin kết nối các máy chủ:
 | Server | Địa chỉ / Hostname | Port | Username / Password | Vai trò chính |
 | :--- | :--- | :---: | :--- | :--- |
-| **Test Runner Server** | `10.218.158.66` | 22 | `lge` / `lge@1234` | Chạy test xTS, lưu kết quả thô `01.Full/`, chạy `ReportGenerator.py`. |
+| **Test Runner Server** | `10.218.158.66` hoặc `10.218.153.44` (Tùy biến) | 22 | `lge` / `lge@1234` | Chạy test xTS, lưu kết quả thô `01.Full/`, chạy `ReportGenerator.py`. Đường dẫn `01.Full` cấu hình linh hoạt theo dự án (vd: `/home/lge/GoogleQA/P33B_26MY/03.REPORT/01.Full/`). |
 | **APTRA Analysis Server** | `loghub.lge.com` (`10.158.15.144`) | 22 | `aptra` / `aptra` | Chạy tool phân tích từ XML/HTML nội bộ sang các file `.xlsx`, `.csv`, `.dat`. Đường dẫn: `/nas/APTRA/`. |
 | **GOOGLEQA Storage Server** | `loghub.lge.com` (`10.158.15.144`) | 22 | `googleqa` / `googleqa` | Lưu trữ chính thức kết quả test chứng chỉ Google phục vụ audit và release. Đường dẫn: `/nas/GOOGLEQA/Official_Test_results/`. |
 | **Local Client** | Windows Host (`D:\Training\Guide\YAK`) | - | - | Chạy công cụ điều khiển `xTS_Tool`, xử lý logic Excel `openpyxl`. |
