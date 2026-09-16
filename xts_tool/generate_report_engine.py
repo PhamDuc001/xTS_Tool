@@ -280,29 +280,6 @@ class GenerateReportWorker(QThread):
         _, o_ok, _ = self.ssh.run_command(chk_cmd)
         if "OK" not in o_ok:
             return False, f"Không tìm thấy thư mục kết quả '00.Internal' tại: {raw_parent}"
-
-        # Auto-detect SW version & Model from generated artifacts on server
-        try:
-            detected = self.ssh.detect_report_metadata(raw_path)
-            if detected.get("sw_version"):
-                det_sw = detected["sw_version"]
-                if det_sw != self.params.get("sw_version"):
-                    self.log(f"[AUTO-DETECT] 💡 Phát hiện SW Version mới từ server: {det_sw} (thay thế: {self.params.get('sw_version')})", "SUCCESS")
-                    self.params["sw_version"] = det_sw
-                    self.params["short_sw"] = det_sw.split(".", 1)[-1] if "." in det_sw else det_sw
-            if detected.get("model_full"):
-                det_model = detected["model_full"]
-                if det_model != self.params.get("model_full"):
-                    self.log(f"[AUTO-DETECT] 💡 Phát hiện Model Device từ server: {det_model}", "INFO")
-                    self.params["model_full"] = det_model
-            if detected.get("model_code"):
-                det_mc = detected["model_code"]
-                if det_mc != self.params.get("model_code"):
-                    self.log(f"[AUTO-DETECT] 💡 Phát hiện Model Code từ server: {det_mc}", "INFO")
-                    self.params["model_code"] = det_mc
-        except Exception as e:
-            self.log(f"[WARN] Lỗi khi tự động nhận diện metadata từ server: {e}", "WARN")
-
         return True, "ReportGenerator đã hoàn tất và cấu trúc 00.Internal/ đã sẵn sàng."
 
     # -------------------------------------------------------------------------
