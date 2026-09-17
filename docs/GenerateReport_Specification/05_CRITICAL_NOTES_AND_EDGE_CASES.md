@@ -18,6 +18,7 @@
 10. [Xử Lý Khi Chạy Không Đầy Đủ Bài Test (Partial Test Runs)](#10-xử-lý-khi-chạy-không-đầy-đủ-bài-test-partial-test-runs)
 11. [Kỹ Thuật Làm Sạch Hàng 15–40 và Tránh Hỏng File Excel Do Unmerge](#11-kỹ-thuật-làm-sạch-hàng-1540-và-tránh-hỏng-file-excel-do-unmerge)
 12. [Bảo Toàn Định Dạng Ngày Tháng (Date String) & Công Thức Tỷ Lệ Pass](#12-bảo-toàn-định-dạng-ngày-tháng-date-string--công-thức-tỷ-lệ-pass)
+13. [Tách Biệt Luồng Báo Cáo Nhanh (Fast-Track) Khỏi Gói Lưu Trữ Nặng (Heavy Archives)](#13-tách-biệt-luồng-báo-cáo-nhanh-fast-track-khỏi-gói-lưu-trữ-nặng-heavy-archives)
 
 ---
 
@@ -326,3 +327,52 @@ if ws.max_row >= 15:
    ```
 2. **Bảo tồn nguyên vẹn công thức tại ô H12:**
    - Không can thiệp hoặc ghi đè vào ô `H12` trên sheet `Test Summary`. Ô này giữ nguyên giá trị công thức `=E12/C12`.
+
+---
+
+## 13. Tách Biệt Luồng Báo Cáo Nhanh (Fast-Track) Khỏi Gói Lưu Trữ Nặng (Heavy Archives)
+
+### ⚠️ Vấn đề trong kiến trúc cũ:
+- Trong thiết kế sơ khởi, ngay sau khi công cụ `ReportGenerator.py` chạy xong, hệ thống thực hiện đồng bộ toàn bộ các file nén sang GOOGLEQA (`01.*.zip`, `00.OEM_APFE.zip`, `00.OEM_APFE_UPLOAD.zip`, `02.*.zip`).
+- **Nút thắt cổ chai (Bottleneck):**
+  - Dung lượng các file nén này rất lớn (từ hàng trăm MB đến hàng chục GB tùy bộ test như CTS, CTSonGSI, VTS).
+  - Quá trình upload Server-to-Server qua SFTP thường mất từ **15 đến 30 phút**.
+  - **Nghịch lý thực tế:** Toàn bộ các bước tiếp theo trong quy trình gồm:
+    1. Server APTRA phân tích dữ liệu;
+    2. Tải các file kết quả `.xlsx` về Windows;
+    3. Chuẩn hóa các file `03.*.xlsx`;
+    4. Tổng hợp và tạo file `Summary.xlsx`;
+    **HOÀN TOÀN KHÔNG CẦN** và không hề chạm tới các gói nén zip trên GOOGLEQA! Server APTRA chỉ cần duy nhất thư mục `00.Internal/*Results/` (chứa các file HTML, XML và thư mục con `DataforAuto/`).
+  - Hậu quả: Kỹ sư phải ngồi chờ 20–30 phút chỉ để nhận được một file báo cáo Excel nhẹ vài chục KB, gây lãng phí lớn thời gian làm việc và làm tắc nghẽn quy trình release khẩn cấp.
+
+### ✅ Giải pháp kiến trúc: Phân Tách Hai Luồng (Two-Track Decoupled Pipeline):
+
+```mermaid
+flowchart TD
+    RG["1. ReportGenerator.py hoàn tất"] --> InputPath["2. Critical Input Path (Chỉ đẩy 00.Internal/*Results sang APTRA) ~15s"]
+    InputPath --> APTRA["3. APTRA phân tích & User Confirm"]
+    APTRA --> Download["4. Tải file *.xlsx nhẹ về Windows"]
+    Download --> OpenPyXL["5-6. Xử lý & Chuẩn hóa Excel (openpyxl) < 1s"]
+    OpenPyXL --> PublishExcel["7. Phát hành tức thời báo cáo Excel lên GOOGLEQA ~2s"]
+    PublishExcel --> DoneFast["🏁 HOÀN TẤT BÁO CÁO (FAST-TRACK: ~1-2 phút)"]
+
+    RG -.->|"Tách riêng / Không chặn luồng chính"| HeavyPath["8. Gói Lưu Trữ Nặng (01.*.zip, 00.OEM, 02.*) ~15-30 phút"]
+    HeavyPath -.-> StorageGQ["Lưu trữ lâu dài trên GOOGLEQA"]
+```
+
+1. **Phần 1: Luồng Phê Chuẩn Nhanh (Fast-Track: Bước 1 đến Bước 7):**
+   - **Bước 2 (Critical Input Path):** Chỉ đồng bộ duy nhất thư mục `00.Internal/*Results` từ máy runner sang APTRA bằng lệnh `curl` SFTP song song. Toàn bộ các file nén nặng bị loại bỏ khỏi bước này, giúp bước 2 hoàn thành chỉ trong **10–20 giây**.
+   - **Bước 3–6:** APTRA phân tích, tải các file `.xlsx` nhẹ về Local Windows, xử lý và làm sạch bằng thư viện `openpyxl`.
+   - **Bước 7 (Phát hành báo cáo tức thì):** SFTP trực tiếp từ Windows lên GOOGLEQA đưa toàn bộ các file `03.*.xlsx` và `Summary.xlsx` lên thư mục phát hành chính thức, đồng thời copy 1 bản sang `ResultFinal/` trên runner server. Thời gian upload chỉ mất **1–2 giây**.
+   - **Kết quả:** Kỹ sư có đầy đủ bộ báo cáo Excel chuẩn hóa đã xuất bản lên GOOGLEQA chỉ sau **~1–2 phút**! Kỹ sư có thể lập tức mở thư mục `temp_report/` xem kết quả, gửi email hoặc báo cáo lãnh đạo.
+
+2. **Phần 2: Gói Lưu Trữ Nặng Độc Lập (Heavy Archives: Bước 8):**
+   - Chịu trách nhiệm đồng bộ các gói nén dung lượng lớn:
+     - `01.Full/*.zip` (`01.CTS.zip`, `01.VTS.zip`...).
+     - `00.OEM_APFE.zip`, `00.OEM_APFE_UPLOAD.zip`.
+     - `00.Internal/02.LGE_*.zip`.
+   - **Cơ chế điều khiển trên GUI `xTS_Tool`:**
+     - **Mặc định:** Checkbox `[ ] 📦 Tự động upload gói zip nặng (Bước 8)` không được chọn. Khi bấm *🚀 Chạy Toàn Bộ Quy Trình (Run All)*, tool sẽ chạy Fast-Track (Bước 1 $\rightarrow$ 7) và thông báo hoàn tất thành công. Bước 8 hiển thị trạng thái `⚪ Bỏ qua (tùy chọn)`.
+     - **Tự động nối tiếp:** Nếu kỹ sư tích chọn `[x] 📦 Tự động upload gói zip nặng (Bước 8)` trước khi chạy, tool sẽ tự động chạy liên tục từ Bước 1 đến hết Bước 8.
+     - **Chạy thủ công độc lập:** Kỹ sư có thể bấm nút **"Chạy Bước Này"** tại dòng Bước 8 bất kỳ lúc nào (ví dụ: chạy vào giờ nghỉ trưa hoặc cuối ngày) mà không sợ ảnh hưởng đến dữ liệu báo cáo Excel đã xuất bản.
+

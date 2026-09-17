@@ -16,11 +16,12 @@ Tích hợp thành **Sub-tab thứ 3** trong `ServerTab`: **"📑 Tạo Báo Cá
    - Tester ID: `duc4.pham`
    - Previous Summary Path + Nút **"🔍 Tự Động Tìm Bản Gần Nhất"** + Nút **"Browse..."**
 2. **Khu vực Điều khiển (Control Actions):**
-   - Nút lớn: **"🚀 Chạy Toàn Bộ Quy Trình (Run All)"**
-   - Bảng danh sách từng bước kèm nút **"Chạy Bước Này"** để hỗ trợ debug từng phần (Step-by-Step).
+   - Nút lớn: **"🚀 Chạy Toàn Bộ Quy Trình (Run All)"** (Mặc định chạy Fast-Track Bước 1–7 trong ~1–2 phút).
+   - Checkbox: **"📦 Tự động upload gói zip nặng (Bước 8)"** (Mặc định không chọn, cho phép linh hoạt chạy gói lưu trữ nặng).
+   - Bảng danh sách 8 bước kèm nút **"Chạy Bước Này"** cho từng bước độc lập (Step-by-Step Execution / Debug).
    - Nút **"📂 Mở Thư Mục Báo Cáo (Local)"**: Mở ngay folder `temp_report/` trên máy tính để kỹ sư xem trước file Excel.
 3. **Khu vực Tiến độ & Console Nhật ký:**
-   - Progress bar hiển thị % tiến trình tổng.
+   - Progress bar hiển thị tiến trình tổng (7 bước hoặc 8 bước).
    - Cửa sổ Text Console hiển thị log màu (INFO, SUCCESS, WARNING, ERROR).
 
 ---
@@ -29,20 +30,19 @@ Tích hợp thành **Sub-tab thứ 3** trong `ServerTab`: **"📑 Tạo Báo Cá
 
 ```
 xts_tool/
-├── generate_report_tab.py         # Giao diện Sub-tab 3 (PyQt6)
-├── report_pipeline_engine.py      # Bộ điều phối quy trình 9 bước
-└── excel_report_formatter.py     # Module openpyxl xử lý file Excel trên Local
+├── generate_report_tab.py         # Giao diện Sub-tab 3 (PyQt6) & Controller
+└── generate_report_engine.py      # Core Engine điều phối 8 bước & ExcelFormatter (openpyxl)
 ```
 
-### Chi tiết các bước thực thi trong `report_pipeline_engine.py`:
-1. `step1_run_report_generator()`: Gọi lệnh trên Server 66 qua SSH.
-2. `step2_sync_to_googleqa()`: Chạy `curl` SFTP Server-to-Server đẩy `01.*` và `00.OEM*` sang GOOGLEQA.
-3. `step3_sync_to_aptra()`: Chạy `curl` SFTP Server-to-Server đẩy `00.Internal/*Results` sang APTRA.
-4. `step4_wait_aptra_confirmation()`: Hiển thị Pop-up chờ kỹ sư confirm APTRA chạy xong. Kiểm tra sự xuất hiện của file CSV.
-5. `step5_download_excel_to_local()`: Tải trực tiếp các file `*Result.xlsx` từ APTRA và file Summary mẫu từ GOOGLEQA về Windows `temp_report/`.
-6. `step6_format_suite_reports()`: Gọi `excel_report_formatter` đổi tên `03.`, điền header, unmerge `B17:F17`, xóa hàng 15-40.
-7. `step7_generate_summary_report()`: Trích xuất `D3:J3`, đọc XML của `CTS_Verifier`, tạo block mới, lọc module fail (`Failed > 0`), lọc testcase fail.
-8. `step8_publish_to_googleqa()`: Upload trực tiếp từ Windows lên GOOGLEQA và đồng bộ sang Server 66.
+### Chi tiết 8 bước thực thi trong `GenerateReportEngine`:
+1. `_step1_run_report_generator()`: Gọi lệnh chạy `ReportGenerator.py` trên Test Runner Server qua SSH.
+2. `_step2_sync_to_aptra()`: Chạy `curl` SFTP song song từ Runner sang APTRA chỉ đẩy các thư mục `00.Internal/*Results/` (Critical Input Path).
+3. `_step3_wait_aptra_confirmation()`: Hiển thị Pop-up chờ kỹ sư confirm APTRA chạy xong và kiểm tra file CSV trên APTRA.
+4. `_step4_download_excel_to_local()`: Tải trực tiếp các file `*Result(s).xlsx` từ APTRA và file Summary mẫu từ GOOGLEQA về Windows `temp_report/`.
+5. `_step5_format_suite_reports()`: Gọi `ExcelReportFormatter` đổi tên `03.*.xlsx`, điền Header (C5 là SW version mới), unmerge an toàn dải hàng 15–40 và xóa hàng thừa.
+6. `_step6_generate_summary_report()`: Trích xuất 7 chỉ số (kèm fallback), bóc tách version điền động vào `Test Category` cho toàn bộ 10 suite, nhân bản block mới, cập nhật 2 sheet Fail.
+7. `_step7_publish_to_googleqa()`: SFTP upload trực tiếp các file `.xlsx` nhẹ lên GOOGLEQA trong 1–2 giây và copy vào `ResultFinal/` trên runner.
+8. `_step8_sync_heavy_archives_to_googleqa()`: Chạy `curl` SFTP đẩy các gói zip nén nặng (`01.*.zip`, `00.OEM*.zip`, `02.*.zip`) sang GOOGLEQA (chạy độc lập hoặc kích hoạt tự động qua checkbox).
 
 ---
 

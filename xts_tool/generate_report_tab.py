@@ -234,6 +234,11 @@ class GenerateReportTab(QWidget):
         self.btn_open_folder.clicked.connect(self._open_report_folder)
         ctrl_layout.addWidget(self.btn_open_folder)
 
+        self.chk_auto_upload_heavy = QCheckBox("📦 Tự động upload gói zip nặng (Bước 8)")
+        self.chk_auto_upload_heavy.setToolTip("Mặc định bỏ chọn: Luồng chính hoàn thành siêu tốc ở Bước 7 (~1-2 phút). Bạn có thể tự bấm '▶ Chạy Bước Này' ở Bước 8 khi rảnh.")
+        self.chk_auto_upload_heavy.setChecked(False)
+        ctrl_layout.addWidget(self.chk_auto_upload_heavy)
+
         ctrl_layout.addStretch()
 
         self.lbl_status = QLabel("Trạng thái: Sẵn sàng")
@@ -267,12 +272,13 @@ class GenerateReportTab(QWidget):
 
         step_descriptions = [
             "Chạy ReportGenerator.py -p <raw_path> để sinh 00.Internal và các file zip",
-            "Đồng bộ song song 100%: Upload file zip sang GOOGLEQA (4 luồng) & folder *Results sang APTRA (4 luồng)",
+            "Đồng bộ thư mục 00.Internal/*Results (HTML, XML, DataforAuto) sang APTRA (4 luồng song song, siêu nhanh)",
             "Hiện Pop-up nhắc kỹ sư kích hoạt APTRA Analysis & chờ xác nhận",
             "Tải *Result.xlsx từ APTRA, Summary mẫu từ GOOGLEQA, và CTS_Verifier XML về Local Windows",
             "Đổi tên file 03.*, điền Header metadata, unmerge B17:F17, xóa rows 15-40 bằng openpyxl",
             "Chèn khối version mới vào sheet Summary, tính =SUM, cập nhật Fail Module & TestCase List",
-            "Upload trực tiếp toàn bộ file 03.*.xlsx và file Summary hoàn chỉnh lên server GOOGLEQA",
+            "Upload trực tiếp các file Excel nhẹ (03.*.xlsx và Summary.xlsx) lên server GOOGLEQA",
+            "Đồng bộ các gói lưu trữ nặng (01.*.zip, 00.OEM*.zip, 02.*.zip) sang GOOGLEQA (tùy chọn / chạy sau)",
         ]
 
         self.table_steps.setRowCount(len(STEP_TITLES))
@@ -323,6 +329,8 @@ class GenerateReportTab(QWidget):
             self.txt_aptra_path.setText(gr_cfg["aptra_path"])
         if gr_cfg.get("googleqa_dest_path"):
             self.txt_googleqa_dest.setText(gr_cfg["googleqa_dest_path"])
+        if "auto_upload_heavy_archives" in gr_cfg:
+            self.chk_auto_upload_heavy.setChecked(bool(gr_cfg["auto_upload_heavy_archives"]))
 
     def _get_execution_params(self) -> Dict[str, Any]:
         return {
@@ -339,6 +347,7 @@ class GenerateReportTab(QWidget):
             "prev_summary_path": self.txt_prev_summary.text().strip(),
             "aptra_path": self.txt_aptra_path.text().strip(),
             "googleqa_dest_path": self.txt_googleqa_dest.text().strip(),
+            "auto_upload_heavy_archives": self.chk_auto_upload_heavy.isChecked(),
             "report_generator_script": self.config.get("generate_report", {}).get(
                 "report_generator_script",
                 "/home/lge/Environment/tools/GenerReport_Update_0623/ReportGenerator.py"
@@ -459,17 +468,26 @@ class GenerateReportTab(QWidget):
 
         # Reset UI table status
         if single_step is None:
+            auto_heavy = self.chk_auto_upload_heavy.isChecked()
             for r in range(self.table_steps.rowCount()):
                 item = self.table_steps.item(r, 3)
                 if item:
-                    item.setText("⚪ Chờ chạy")
-                    item.setForeground(QColor("#757575"))
+                    if r == 7 and not auto_heavy:
+                        item.setText("⚪ Bỏ qua (tùy chọn)")
+                        item.setForeground(QColor("#9e9e9e"))
+                    else:
+                        item.setText("⚪ Chờ chạy")
+                        item.setForeground(QColor("#757575"))
+            total_steps = len(STEP_TITLES) if auto_heavy else 7
+            self.progress_bar.setRange(0, total_steps)
             self.progress_bar.setValue(0)
         else:
             item = self.table_steps.item(single_step, 3)
             if item:
                 item.setText("⚪ Chờ chạy")
                 item.setForeground(QColor("#757575"))
+            self.progress_bar.setRange(0, 1)
+            self.progress_bar.setValue(0)
 
         self.btn_run_all.setEnabled(False)
         self.btn_stop.setEnabled(True)
@@ -530,13 +548,28 @@ class GenerateReportTab(QWidget):
         self.btn_stop.setEnabled(False)
 
         if success:
-            self.lbl_status.setText("Trạng thái: ✅ Đã hoàn thành toàn bộ")
+            self.lbl_status.setText("Trạng thái: ✅ Đã hoàn thành")
             self.progress_bar.setValue(self.progress_bar.maximum())
-            QMessageBox.information(
-                self, "Báo Cáo Thành Công",
-                "🎉 Quá trình tạo và xuất bản báo cáo chứng chỉ Google đã hoàn tất thành công!\n\n"
-                "Báo cáo và các file bộ test đã được upload chính thức lên server GOOGLEQA."
-            )
+            is_single = (self.worker and self.worker.single_step_idx is not None)
+            if not is_single and not self.chk_auto_upload_heavy.isChecked():
+                QMessageBox.information(
+                    self, "Báo Cáo Thành Công (Siêu Tốc)",
+                    "🎉 Báo cáo chứng chỉ Google đã được tạo và xuất bản thành công!\n\n"
+                    "• Các file Excel chi tiết (03.*.xlsx) và file Summary đã được upload lên GOOGLEQA.\n"
+                    "• Gói lưu trữ nặng (Bước 8: 01.*.zip, 00.OEM, 02.*) chưa upload.\n"
+                    "  -> Bạn có thể bấm nút [▶ Chạy Bước Này] ở dòng Bước 8 bất kỳ lúc nào để upload bổ sung."
+                )
+            elif is_single and self.worker and self.worker.single_step_idx == 7:
+                QMessageBox.information(
+                    self, "Đồng Bộ Thành Công",
+                    "🎉 Đã hoàn tất đồng bộ các gói lưu trữ nặng (01.*.zip, 00.OEM, 02.*) sang GOOGLEQA!"
+                )
+            else:
+                QMessageBox.information(
+                    self, "Báo Cáo Thành Công",
+                    "🎉 Quá trình tạo và xuất bản báo cáo chứng chỉ Google đã hoàn tất thành công!\n\n"
+                    "Báo cáo và toàn bộ các gói dữ liệu đã được upload đầy đủ lên server GOOGLEQA."
+                )
         else:
             self.lbl_status.setText("Trạng thái: ⚠️ Kết thúc có lỗi")
             QMessageBox.warning(

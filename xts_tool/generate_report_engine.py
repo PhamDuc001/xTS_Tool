@@ -67,12 +67,13 @@ SUITE_MATCH_PRIORITY = [
 
 STEP_TITLES = [
     "1. Chạy ReportGenerator",
-    "2. Đồng bộ kết quả sang GOOGLEQA & APTRA",
+    "2. Đồng bộ dữ liệu phân tích sang APTRA",
     "3. Xác nhận phân tích trên APTRA",
     "4. Tải file kết quả về Local Windows",
     "5. Chuẩn hóa các file Excel con (03.*.xlsx)",
     "6. Tạo & Cập nhật file Summary",
-    "7. Phát hành báo cáo lên GOOGLEQA",
+    "7. Phát hành báo cáo Excel lên GOOGLEQA",
+    "8. Đồng bộ gói lưu trữ nặng sang GOOGLEQA (01.*, 00.OEM, 02.*)",
 ]
 
 
@@ -126,12 +127,13 @@ class GenerateReportWorker(QThread):
 
         step_methods = [
             self._step1_run_report_generator,
-            self._step2_sync_to_googleqa_and_aptra,
+            self._step2_sync_to_aptra,
             self._step3_wait_aptra_confirmation,
             self._step4_download_to_local,
             self._step5_format_single_suites,
             self._step6_update_summary_workbook,
             self._step7_publish_to_googleqa,
+            self._step8_sync_heavy_archives_to_googleqa,
         ]
 
         if self.single_step_idx is not None:
@@ -142,8 +144,9 @@ class GenerateReportWorker(QThread):
                 self.workflow_finished_signal.emit(False, "Bước không hợp lệ.")
                 return
         else:
-            steps_to_run = list(enumerate(zip(STEP_TITLES, step_methods)))
-            steps_to_run = [(idx, title, fn) for idx, (title, fn) in steps_to_run]
+            auto_heavy = self.params.get("auto_upload_heavy_archives", False)
+            num_steps = len(step_methods) if auto_heavy else 7
+            steps_to_run = [(idx, STEP_TITLES[idx], step_methods[idx]) for idx in range(num_steps)]
 
         total = len(steps_to_run)
         all_success = True
@@ -283,268 +286,136 @@ class GenerateReportWorker(QThread):
         return True, "ReportGenerator đã hoàn tất và cấu trúc 00.Internal/ đã sẵn sàng."
 
     # -------------------------------------------------------------------------
-    # Step 2: Sync Raw Results to GOOGLEQA & Analysis Data to APTRA (100% Parallel)
+    # Step 2: Sync Analysis Data (*Results) to APTRA
     # -------------------------------------------------------------------------
-    def _step2_sync_to_googleqa_and_aptra(self) -> Tuple[bool, str]:
+    def _step2_sync_to_aptra(self) -> Tuple[bool, str]:
         p = self._get_paths()
         raw_parent = p["raw_parent"]
-        raw_path = p["raw_path"]
-        dest_gq = p["googleqa_dest_path"]
         dest_aptra = p["aptra_path"]
-
-        gq_cfg = self.params.get("googleqa_server", {})
-        gq_host = gq_cfg.get("host", "loghub.lge.com")
-        gq_user = gq_cfg.get("username", "googleqa")
-        gq_pass = gq_cfg.get("password", "googleqa")
 
         aptra_cfg = self.params.get("aptra_server", {})
         aptra_host = aptra_cfg.get("host", "loghub.lge.com")
         aptra_user = aptra_cfg.get("username", "aptra")
         aptra_pass = aptra_cfg.get("password", "aptra")
 
-        self.log(f"Đích GOOGLEQA: {dest_gq} (host: {gq_host})", "INFO")
-        self.log(f"Đích APTRA:    {dest_aptra} (host: {aptra_host})", "INFO")
-        self.log("Bắt đầu đồng bộ song song 100% lên cả GOOGLEQA (file zip) và APTRA (folder *Results)...", "INFO")
+        self.log(f"Đích APTRA: {dest_aptra} (host: {aptra_host})", "INFO")
+        self.log("Bắt đầu đồng bộ thư mục phân tích *Results sang APTRA (4 luồng song song)...", "INFO")
 
         sync_script = f"""bash -c '
 set -e
-DEST_GQ="{dest_gq}"
-USER_PASS_GQ="{gq_user}:{gq_pass}"
-SFTP_BASE_GQ="sftp://{gq_host}$DEST_GQ"
-MAX_CONCURRENT_GQ=4
-
 DEST_APTRA="{dest_aptra}"
 USER_PASS_APTRA="{aptra_user}:{aptra_pass}"
 SFTP_BASE_APTRA="sftp://{aptra_host}$DEST_APTRA"
 MAX_CONCURRENT_APTRA=4
 
-ERR_FLAG_GQ="/tmp/sync_gq_err_$$"
 ERR_FLAG_APTRA="/tmp/sync_aptra_err_$$"
-rm -f "$ERR_FLAG_GQ" "$ERR_FLAG_APTRA"
+rm -f "$ERR_FLAG_APTRA"
 
-# =========================================================================
-# Sub-task 1: Upload Raw Zip Files to GOOGLEQA (Concurrent 4 workers)
-# =========================================================================
-(
-    all_targets=()
-    for f in "{raw_path}"/*.zip "{raw_parent}/01.Full"/*.zip; do
-        if [ -f "$f" ]; then
-            all_targets+=("$f")
-        fi
-    done
-
-    for f in "{raw_parent}"/00.OEM*.zip "{raw_path}"/00.OEM*.zip "{raw_parent}"/00.OEM_APFE*.zip; do
-        if [ -f "$f" ]; then
-            all_targets+=("$f")
-        fi
-    done
-
-    for f in "{raw_parent}/00.Internal"/02.*.zip; do
-        if [ -f "$f" ]; then
-            all_targets+=("$f")
-        fi
-    done
-
-    declare -A seen
-    unique_files=()
-    for f in "${{all_targets[@]}}"; do
-        fname=$(basename "$f")
-        if [[ -z "${{seen[$fname]}}" ]]; then
-            seen["$fname"]=1
-            unique_files+=("$f")
-        fi
-    done
-
-    # Optimization 3: Sort files by size descending (Largest-First Scheduling)
-    files=()
-    while IFS= read -r sz_and_path; do
-        fpath="${{sz_and_path#* }}"
-        if [ -n "$fpath" ]; then
-            files+=("$fpath")
-        fi
-    done < <(for f in "${{unique_files[@]}}"; do
-        stat -c "%s %n" "$f" 2>/dev/null || echo "0 $f"
-    done | sort -rn)
-
-    TOTAL=${{#files[@]}}
-    if [ "$TOTAL" -eq 0 ]; then
-        echo "[GOOGLEQA] CẢNH BÁO: Không tìm thấy file zip nào để upload!"
-    else
-        echo "[GOOGLEQA] === Tổng cộng $TOTAL file cần xử lý sang GOOGLEQA (ưu tiên file lớn trước, tối đa $MAX_CONCURRENT_GQ luồng) ==="
-    fi
-
-    # Optimization 1: Fetch remote directory listing to skip existing files with matching byte size
-    declare -A remote_sizes_gq
-    while IFS=" " read -r rsize fname; do
-        if [ -n "$fname" ] && [ -n "$rsize" ]; then
-            remote_sizes_gq["$fname"]="$rsize"
-        fi
-    done < <(curl -s -k -u "$USER_PASS_GQ" "$SFTP_BASE_GQ/" 2>/dev/null | awk '"'"'/^-/{{sz=$5; for(i=1;i<=8;i++)$i=""; sub(/^[ \t]+/, ""); print sz, $0}}'"'"')
-
-    idx=0
-    for f in "${{files[@]}}"; do
-        idx=$((idx + 1))
-        fname=$(basename "$f")
-        local_size=$(stat -c "%s" "$f" 2>/dev/null || echo 0)
-        hsize=$(du -h "$f" 2>/dev/null | cut -f1)
-        rsize="${{remote_sizes_gq[$fname]}}"
-
-        if [ -n "$rsize" ] && [ "$rsize" -eq "$local_size" ] && [ "$local_size" -gt 0 ]; then
-            echo "[GOOGLEQA] ⏩ [$idx/$TOTAL] Bỏ qua (đã có trên server, khớp $local_size byte): $fname"
-            continue
-        fi
-
-        (
-            echo "[GOOGLEQA] >>> [$idx/$TOTAL] Đang upload: $fname ($hsize) ..."
-            if curl -sS -k -u "$USER_PASS_GQ" --ftp-create-dirs -T "$f" "$SFTP_BASE_GQ/$fname"; then
-                echo "[GOOGLEQA] ✓ [$idx/$TOTAL] Hoàn thành: $fname"
-            else
-                echo "[GOOGLEQA] ✗ [$idx/$TOTAL] Thất bại: $fname" >&2
-                touch "$ERR_FLAG_GQ"
-            fi
-        ) &
-
-        while [ $(jobs -r -p | wc -l) -ge $MAX_CONCURRENT_GQ ]; do
-            wait -n 2>/dev/null || sleep 0.2
-        done
-    done
-
-    wait
-    echo "[GOOGLEQA] === Hoàn tất đồng bộ các file zip sang GOOGLEQA ==="
-) &
-PID_GQ=$!
-
-# =========================================================================
-# Sub-task 2: Upload *Results Folders to APTRA (Concurrent 4 workers)
-# =========================================================================
-(
-    if [ ! -d "{raw_parent}/00.Internal" ]; then
-        echo "[APTRA] LỖI: Thư mục kết quả {raw_parent}/00.Internal không tồn tại!" >&2
-        touch "$ERR_FLAG_APTRA"
-        exit 1
-    fi
-
-    cd "{raw_parent}/00.Internal"
-
-    # Optimization 1: Discover local subdirectories and query remote listing in parallel
-    local_dirs=()
-    while IFS= read -r d; do
-        if [ -n "$d" ]; then
-            local_dirs+=("$d")
-        fi
-    done <<EOF
-$(find *Results -type d 2>/dev/null)
-EOF
-
-    tmp_aptra_list="/tmp/aptra_remote_list_$$"
-    rm -f "$tmp_aptra_list"
-    for d in "${{local_dirs[@]}}"; do
-        (
-            curl -s -k -u "$USER_PASS_APTRA" "$SFTP_BASE_APTRA/$d/" 2>/dev/null | awk -v dir="$d" '"'"'/^-/{{sz=$5; for(i=1;i<=8;i++)$i=""; sub(/^[ \t]+/, ""); print sz, dir"/"$0}}'"'"' >> "$tmp_aptra_list"
-        ) &
-    done
-    wait
-
-    declare -A remote_sizes_aptra
-    while IFS=" " read -r rsz relpath; do
-        if [ -n "$relpath" ] && [ -n "$rsz" ]; then
-            remote_sizes_aptra["$relpath"]="$rsz"
-        fi
-    done < "$tmp_aptra_list"
-    rm -f "$tmp_aptra_list"
-
-    # Optimization 3: Find all files and sort by size descending (Largest-First Scheduling)
-    raw_aptra_files=()
-    while IFS= read -r file; do
-        if [ -n "$file" ]; then
-            raw_aptra_files+=("$file")
-        fi
-    done <<EOF
-$(find *Results -type f 2>/dev/null)
-EOF
-
-    aptra_files=()
-    while IFS= read -r sz_and_path; do
-        fpath="${{sz_and_path#* }}"
-        if [ -n "$fpath" ]; then
-            aptra_files+=("$fpath")
-        fi
-    done < <(for f in "${{raw_aptra_files[@]}}"; do
-        stat -c "%s %n" "$f" 2>/dev/null || echo "0 $f"
-    done | sort -rn)
-
-    TOTAL_APTRA=${{#aptra_files[@]}}
-    if [ "$TOTAL_APTRA" -eq 0 ]; then
-        echo "[APTRA] CẢNH BÁO: Không tìm thấy file trong các thư mục *Results để upload!"
-    else
-        echo "[APTRA] === Tổng cộng $TOTAL_APTRA file trong *Results cần xử lý sang APTRA (ưu tiên file lớn trước, tối đa $MAX_CONCURRENT_APTRA luồng) ==="
-    fi
-
-    idx_a=0
-    for f in "${{aptra_files[@]}}"; do
-        idx_a=$((idx_a + 1))
-        local_size=$(stat -c "%s" "$f" 2>/dev/null || echo 0)
-        hsize=$(du -h "$f" 2>/dev/null | cut -f1)
-        rsize="${{remote_sizes_aptra[$f]}}"
-
-        if [ -n "$rsize" ] && [ "$rsize" -eq "$local_size" ] && [ "$local_size" -gt 0 ]; then
-            echo "[APTRA] ⏩ [$idx_a/$TOTAL_APTRA] Bỏ qua (đã có trên server, khớp $local_size byte): $f"
-            continue
-        fi
-
-        (
-            echo "[APTRA] >>> [$idx_a/$TOTAL_APTRA] Đang upload: $f ($hsize) ..."
-            if curl -sS -k -u "$USER_PASS_APTRA" --ftp-create-dirs -T "$f" "$SFTP_BASE_APTRA/$f"; then
-                echo "[APTRA] ✓ [$idx_a/$TOTAL_APTRA] Hoàn thành: $f"
-            else
-                echo "[APTRA] ✗ [$idx_a/$TOTAL_APTRA] Thất bại: $f" >&2
-                touch "$ERR_FLAG_APTRA"
-            fi
-        ) &
-
-        while [ $(jobs -r -p | wc -l) -ge $MAX_CONCURRENT_APTRA ]; do
-            wait -n 2>/dev/null || sleep 0.2
-        done
-    done
-
-    wait
-    echo "[APTRA] === Hoàn tất đồng bộ các thư mục *Results sang APTRA ==="
-) &
-PID_APTRA=$!
-
-# =========================================================================
-# Wait for both background sub-tasks to complete
-# =========================================================================
-wait $PID_GQ || true
-wait $PID_APTRA || true
-
-HAS_ERR=0
-if [ -f "$ERR_FLAG_GQ" ]; then
-    rm -f "$ERR_FLAG_GQ"
-    echo "LỖI: Upload sang server GOOGLEQA có lỗi!" >&2
-    HAS_ERR=1
-fi
-if [ -f "$ERR_FLAG_APTRA" ]; then
-    rm -f "$ERR_FLAG_APTRA"
-    echo "LỖI: Upload sang server APTRA có lỗi!" >&2
-    HAS_ERR=1
-fi
-
-if [ "$HAS_ERR" -eq 1 ]; then
+if [ ! -d "{raw_parent}/00.Internal" ]; then
+    echo "[APTRA] LỖI: Thư mục kết quả {raw_parent}/00.Internal không tồn tại!" >&2
     exit 1
 fi
 
-echo "SYNC_ALL_COMPLETE"
+cd "{raw_parent}/00.Internal"
+
+local_dirs=()
+while IFS= read -r d; do
+    if [ -n "$d" ]; then
+        local_dirs+=("$d")
+    fi
+done <<EOF
+$(find *Results -type d 2>/dev/null)
+EOF
+
+tmp_aptra_list="/tmp/aptra_remote_list_$$"
+rm -f "$tmp_aptra_list"
+for d in "${{local_dirs[@]}}"; do
+    (
+        curl -s -k -u "$USER_PASS_APTRA" "$SFTP_BASE_APTRA/$d/" 2>/dev/null | awk -v dir="$d" '"'"'/^-/{{sz=$5; for(i=1;i<=8;i++)$i=""; sub(/^[ \t]+/, ""); print sz, dir"/"$0}}'"'"' >> "$tmp_aptra_list"
+    ) &
+done
+wait
+
+declare -A remote_sizes_aptra
+while IFS=" " read -r rsz relpath; do
+    if [ -n "$relpath" ] && [ -n "$rsz" ]; then
+        remote_sizes_aptra["$relpath"]="$rsz"
+    fi
+done < "$tmp_aptra_list"
+rm -f "$tmp_aptra_list"
+
+raw_aptra_files=()
+while IFS= read -r file; do
+    if [ -n "$file" ]; then
+        raw_aptra_files+=("$file")
+    fi
+done <<EOF
+$(find *Results -type f 2>/dev/null)
+EOF
+
+aptra_files=()
+while IFS= read -r sz_and_path; do
+    fpath="${{sz_and_path#* }}"
+    if [ -n "$fpath" ]; then
+        aptra_files+=("$fpath")
+    fi
+done < <(for f in "${{raw_aptra_files[@]}}"; do
+    stat -c "%s %n" "$f" 2>/dev/null || echo "0 $f"
+done | sort -rn)
+
+TOTAL_APTRA=${{#aptra_files[@]}}
+if [ "$TOTAL_APTRA" -eq 0 ]; then
+    echo "[APTRA] CẢNH BÁO: Không tìm thấy file trong các thư mục *Results để upload!"
+else
+    echo "[APTRA] === Tổng cộng $TOTAL_APTRA file trong *Results cần xử lý sang APTRA (ưu tiên file lớn trước, tối đa $MAX_CONCURRENT_APTRA luồng) ==="
+fi
+
+idx_a=0
+for f in "${{aptra_files[@]}}"; do
+    idx_a=$((idx_a + 1))
+    local_size=$(stat -c "%s" "$f" 2>/dev/null || echo 0)
+    hsize=$(du -h "$f" 2>/dev/null | cut -f1)
+    rsize="${{remote_sizes_aptra[$f]}}"
+
+    if [ -n "$rsize" ] && [ "$rsize" -eq "$local_size" ] && [ "$local_size" -gt 0 ]; then
+        echo "[APTRA] ⏩ [$idx_a/$TOTAL_APTRA] Bỏ qua (đã có trên server, khớp $local_size byte): $f"
+        continue
+    fi
+
+    (
+        echo "[APTRA] >>> [$idx_a/$TOTAL_APTRA] Đang upload: $f ($hsize) ..."
+        if curl -sS -k -u "$USER_PASS_APTRA" --ftp-create-dirs -T "$f" "$SFTP_BASE_APTRA/$f"; then
+            echo "[APTRA] ✓ [$idx_a/$TOTAL_APTRA] Hoàn thành: $f"
+        else
+            echo "[APTRA] ✗ [$idx_a/$TOTAL_APTRA] Thất bại: $f" >&2
+            touch "$ERR_FLAG_APTRA"
+        fi
+    ) &
+
+    while [ $(jobs -r -p | wc -l) -ge $MAX_CONCURRENT_APTRA ]; do
+        wait -n 2>/dev/null || sleep 0.2
+    done
+done
+
+wait
+
+if [ -f "$ERR_FLAG_APTRA" ]; then
+    rm -f "$ERR_FLAG_APTRA"
+    echo "LỖI: Upload sang server APTRA có lỗi!" >&2
+    exit 1
+fi
+
+echo "SYNC_APTRA_COMPLETE"
 '"""
 
         def stream_cb(chunk: str):
             self.log(chunk, "STREAM")
 
         code, out = self.ssh.run_command_stream(sync_script, output_callback=stream_cb, check_abort=self.is_aborted)
-        if code != 0 or "SYNC_ALL_COMPLETE" not in out:
-            return False, f"Lỗi khi đồng bộ sang GOOGLEQA và APTRA (code: {code})"
+        if code != 0 or "SYNC_APTRA_COMPLETE" not in out:
+            return False, f"Lỗi khi đồng bộ sang APTRA (code: {code})"
 
-        return True, f"Đã upload song song thành công: GOOGLEQA ({dest_gq}) & APTRA ({dest_aptra})"
+        return True, f"Đã đồng bộ thành công dữ liệu phân tích sang APTRA ({dest_aptra})"
 
     # -------------------------------------------------------------------------
     # Step 3: Wait for User Confirmation on APTRA Analysis
@@ -833,3 +704,131 @@ echo "SYNC_ALL_COMPLETE"
             return True, f"Đã phát hành báo cáo chính thức lên GOOGLEQA: {remote_dest}"
         except Exception as e:
             return False, f"Lỗi khi upload báo cáo lên GOOGLEQA: {str(e)}"
+
+    # -------------------------------------------------------------------------
+    # Step 8: Sync Heavy Archive Files to GOOGLEQA (Optional / Standalone)
+    # -------------------------------------------------------------------------
+    def _step8_sync_heavy_archives_to_googleqa(self) -> Tuple[bool, str]:
+        p = self._get_paths()
+        raw_parent = p["raw_parent"]
+        raw_path = p["raw_path"]
+        dest_gq = p["googleqa_dest_path"]
+
+        gq_cfg = self.params.get("googleqa_server", {})
+        gq_host = gq_cfg.get("host", "loghub.lge.com")
+        gq_user = gq_cfg.get("username", "googleqa")
+        gq_pass = gq_cfg.get("password", "googleqa")
+
+        self.log(f"Đích GOOGLEQA: {dest_gq} (host: {gq_host})", "INFO")
+        self.log("Bắt đầu đồng bộ gói lưu trữ nặng sang GOOGLEQA (01.*.zip, 00.OEM*.zip, 02.*.zip)...", "INFO")
+
+        sync_script = f"""bash -c '
+set -e
+DEST_GQ="{dest_gq}"
+USER_PASS_GQ="{gq_user}:{gq_pass}"
+SFTP_BASE_GQ="sftp://{gq_host}$DEST_GQ"
+MAX_CONCURRENT_GQ=4
+
+ERR_FLAG_GQ="/tmp/sync_gq_err_$$"
+rm -f "$ERR_FLAG_GQ"
+
+all_targets=()
+for f in "{raw_path}"/*.zip "{raw_parent}/01.Full"/*.zip; do
+    if [ -f "$f" ]; then
+        all_targets+=("$f")
+    fi
+done
+
+for f in "{raw_parent}"/00.OEM*.zip "{raw_path}"/00.OEM*.zip "{raw_parent}"/00.OEM_APFE*.zip; do
+    if [ -f "$f" ]; then
+        all_targets+=("$f")
+    fi
+done
+
+for f in "{raw_parent}/00.Internal"/02.*.zip; do
+    if [ -f "$f" ]; then
+        all_targets+=("$f")
+    fi
+done
+
+declare -A seen
+unique_files=()
+for f in "${{all_targets[@]}}"; do
+    fname=$(basename "$f")
+    if [[ -z "${{seen[$fname]}}" ]]; then
+        seen["$fname"]=1
+        unique_files+=("$f")
+    fi
+done
+
+files=()
+while IFS= read -r sz_and_path; do
+    fpath="${{sz_and_path#* }}"
+    if [ -n "$fpath" ]; then
+        files+=("$fpath")
+    fi
+done < <(for f in "${{unique_files[@]}}"; do
+    stat -c "%s %n" "$f" 2>/dev/null || echo "0 $f"
+done | sort -rn)
+
+TOTAL=${{#files[@]}}
+if [ "$TOTAL" -eq 0 ]; then
+    echo "[GOOGLEQA ARCHIVES] CẢNH BÁO: Không tìm thấy file zip nào để upload!"
+else
+    echo "[GOOGLEQA ARCHIVES] === Tổng cộng $TOTAL file zip cần upload sang GOOGLEQA (tối đa $MAX_CONCURRENT_GQ luồng) ==="
+fi
+
+declare -A remote_sizes_gq
+while IFS=" " read -r rsize fname; do
+    if [ -n "$fname" ] && [ -n "$rsize" ]; then
+        remote_sizes_gq["$fname"]="$rsize"
+    fi
+done < <(curl -s -k -u "$USER_PASS_GQ" "$SFTP_BASE_GQ/" 2>/dev/null | awk '"'"'/^-/{{sz=$5; for(i=1;i<=8;i++)$i=""; sub(/^[ \t]+/, ""); print sz, $0}}'"'"')
+
+idx=0
+for f in "${{files[@]}}"; do
+    idx=$((idx + 1))
+    fname=$(basename "$f")
+    local_size=$(stat -c "%s" "$f" 2>/dev/null || echo 0)
+    hsize=$(du -h "$f" 2>/dev/null | cut -f1)
+    rsize="${{remote_sizes_gq[$fname]}}"
+
+    if [ -n "$rsize" ] && [ "$rsize" -eq "$local_size" ] && [ "$local_size" -gt 0 ]; then
+        echo "[GOOGLEQA ARCHIVES] ⏩ [$idx/$TOTAL] Bỏ qua (đã có trên server, khớp $local_size byte): $fname"
+        continue
+    fi
+
+    (
+        echo "[GOOGLEQA ARCHIVES] >>> [$idx/$TOTAL] Đang upload: $fname ($hsize) ..."
+        if curl -sS -k -u "$USER_PASS_GQ" --ftp-create-dirs -T "$f" "$SFTP_BASE_GQ/$fname"; then
+            echo "[GOOGLEQA ARCHIVES] ✓ [$idx/$TOTAL] Hoàn thành: $fname"
+        else
+            echo "[GOOGLEQA ARCHIVES] ✗ [$idx/$TOTAL] Thất bại: $fname" >&2
+            touch "$ERR_FLAG_GQ"
+        fi
+    ) &
+
+    while [ $(jobs -r -p | wc -l) -ge $MAX_CONCURRENT_GQ ]; do
+        wait -n 2>/dev/null || sleep 0.2
+    done
+done
+
+wait
+
+if [ -f "$ERR_FLAG_GQ" ]; then
+    rm -f "$ERR_FLAG_GQ"
+    echo "LỖI: Upload gói lưu trữ sang GOOGLEQA có lỗi!" >&2
+    exit 1
+fi
+
+echo "SYNC_GQ_ARCHIVES_COMPLETE"
+'"""
+
+        def stream_cb(chunk: str):
+            self.log(chunk, "STREAM")
+
+        code, out = self.ssh.run_command_stream(sync_script, output_callback=stream_cb, check_abort=self.is_aborted)
+        if code != 0 or "SYNC_GQ_ARCHIVES_COMPLETE" not in out:
+            return False, f"Lỗi khi đồng bộ gói lưu trữ sang GOOGLEQA (code: {code})"
+
+        return True, f"Đã đồng bộ thành công các gói lưu trữ nặng sang GOOGLEQA ({dest_gq})"

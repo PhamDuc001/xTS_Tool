@@ -40,19 +40,20 @@ flowchart TD
     RG -->|"Sinh ra"| Internal
     RG -->|"Sinh ra"| OEM
     
-    Server66 -->|"2. Server-to-Server curl SFTP (File nặng)"| GQ_Storage
-    Server66 -->|"3. Server-to-Server curl SFTP (DataforAuto)"| APTRA_In
+    Server66 -->|"2. Server-to-Server curl SFTP: Chỉ đẩy DataforAuto (*Results)"| APTRA_In
     
-    UI -.->|"4. Pop-up chờ User confirm APTRA xong"| APTRA_Tool
+    UI -.->|"3. Pop-up chờ User confirm APTRA xong"| APTRA_Tool
     APTRA_Tool --> APTRA_Out
     
-    APTRA_Out -->|"5. SFTP Tải trực tiếp file *.xlsx nhẹ về Windows"| LocalTemp
-    GQ_Storage -->|"6. SFTP Tải file Summary mẫu về Windows"| LocalTemp
+    APTRA_Out -->|"4. SFTP Tải trực tiếp file *.xlsx nhẹ về Windows"| LocalTemp
+    GQ_Storage -->|"4. SFTP Tải file Summary mẫu về Windows"| LocalTemp
     
     LocalTemp --> OpenPyXL
-    OpenPyXL -->|"7. Format 03.*, unmerge, xóa rows 15-40, tổng hợp Summary"| LocalTemp
+    OpenPyXL -->|"5-6. Format 03.*, unmerge, xóa rows 15-40, tổng hợp Summary"| LocalTemp
     
-    LocalTemp -->|"8. SFTP Upload trực tiếp file 03.* & Summary.xlsx"| GQ_Storage
+    LocalTemp -->|"7. SFTP Upload trực tiếp file nhẹ (03.* & Summary.xlsx)"| GQ_Storage
+
+    Server66 -.->|"8. (Tùy chọn / Chạy sau) Server-to-Server curl SFTP: Gói zip nặng (01.*, 00.OEM, 02.*)"| GQ_Storage
 ```
 
 ### Thông tin kết nối các máy chủ:
@@ -73,3 +74,7 @@ flowchart TD
    - Các file `.xlsx` kết quả và file Summary rất nhẹ (chỉ ~50KB - 80KB mỗi file, tổng cộng dưới 1MB).
    - `xTS_Tool` tải trực tiếp các file này về thư mục tạm `temp_report/` trên máy tính Windows, thực hiện toàn bộ logic định dạng, tính toán bằng `openpyxl` cực nhanh (dưới 1 giây).
    - Upload thẳng các file hoàn thiện lên GOOGLEQA, không cần trung chuyển qua Server 66, không phụ thuộc môi trường Python của server.
+3. **Tách biệt luồng xử lý: Báo cáo nhanh (Fast-Track) vs Lưu trữ nặng (Heavy Archives):**
+   - **Phần 1 (Đầu vào bắt buộc cho phân tích):** Bước 2 chỉ đồng bộ duy nhất `00.Internal/*Results` sang APTRA. Hoàn toàn không đồng bộ gói zip nặng ở bước này.
+   - **Phần 2A (Phát hành báo cáo tức thì):** Bước 7 tự động upload các file `.xlsx` nhẹ lên GOOGLEQA. Toàn bộ luồng tạo báo cáo (Bước 1 đến Bước 7) hoàn thành chỉ trong ~1–2 phút.
+   - **Phần 2B (Lưu trữ gói nén dung lượng lớn):** Bước 8 chuyển các gói zip nặng (`01.*.zip`, `00.OEM*.zip`, `02.*.zip`) sang GOOGLEQA. Bước này được tách thành tùy chọn độc lập (người dùng có thể chạy sau hoặc tick chọn tự động chạy) nhằm tránh nghẽn luồng làm việc.
