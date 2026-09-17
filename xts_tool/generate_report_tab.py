@@ -12,7 +12,8 @@ import paramiko
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QLineEdit,
     QPushButton, QTableWidget, QTableWidgetItem, QHeaderView, QGroupBox,
-    QMessageBox, QFileDialog, QProgressBar, QDateEdit, QDialog, QTextEdit
+    QMessageBox, QFileDialog, QProgressBar, QDateEdit, QDialog, QTextEdit,
+    QCheckBox
 )
 from PyQt6.QtCore import Qt, QDate, pyqtSignal
 from PyQt6.QtGui import QColor, QFont
