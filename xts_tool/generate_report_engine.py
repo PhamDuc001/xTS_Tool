@@ -370,6 +370,10 @@ else
     echo "[APTRA] === Tổng cộng $TOTAL_APTRA file trong *Results cần xử lý sang APTRA (ưu tiên file lớn trước, tối đa $MAX_CONCURRENT_APTRA luồng) ==="
 fi
 
+DONE_DIR_APTRA="/tmp/aptra_done_$$"
+rm -rf "$DONE_DIR_APTRA"
+mkdir -p "$DONE_DIR_APTRA"
+
 idx_a=0
 for f in "${{aptra_files[@]}}"; do
     idx_a=$((idx_a + 1))
@@ -378,16 +382,20 @@ for f in "${{aptra_files[@]}}"; do
     rsize="${{remote_sizes_aptra[$f]}}"
 
     if [ -n "$rsize" ] && [ "$rsize" -eq "$local_size" ] && [ "$local_size" -gt 0 ]; then
-        echo "[APTRA] ⏩ [$idx_a/$TOTAL_APTRA] Bỏ qua (đã có trên server, khớp $local_size byte): $f"
+        touch "$DONE_DIR_APTRA/$idx_a"
+        done_cnt=$(ls -1 "$DONE_DIR_APTRA" 2>/dev/null | wc -l)
+        echo "[APTRA] ⏩ [$done_cnt/$TOTAL_APTRA] Bỏ qua (đã có trên server, khớp $local_size byte): $f"
         continue
     fi
 
     (
-        echo "[APTRA] >>> [$idx_a/$TOTAL_APTRA] Đang upload: $f ($hsize) ..."
+        echo "[APTRA] >>> [Khởi chạy $idx_a/$TOTAL_APTRA] Đang upload: $f ($hsize) ..."
         if curl -sS -k -u "$USER_PASS_APTRA" --ftp-create-dirs -T "$f" "$SFTP_BASE_APTRA/$f"; then
-            echo "[APTRA] ✓ [$idx_a/$TOTAL_APTRA] Hoàn thành: $f"
+            touch "$DONE_DIR_APTRA/$idx_a"
+            done_cnt=$(ls -1 "$DONE_DIR_APTRA" 2>/dev/null | wc -l)
+            echo "[APTRA] ✓ [$done_cnt/$TOTAL_APTRA hoàn tất] $f"
         else
-            echo "[APTRA] ✗ [$idx_a/$TOTAL_APTRA] Thất bại: $f" >&2
+            echo "[APTRA] ✗ [Thất bại] $f" >&2
             touch "$ERR_FLAG_APTRA"
         fi
     ) &
@@ -397,7 +405,13 @@ for f in "${{aptra_files[@]}}"; do
     done
 done
 
+pending_jobs=$(jobs -r -p | wc -l)
+if [ "$pending_jobs" -gt 0 ]; then
+    echo "[APTRA] ⏳ Đã điều phối xong toàn bộ $TOTAL_APTRA file. Đang chờ $pending_jobs luồng tải nền (file dung lượng lớn) hoàn tất..."
+fi
+
 wait
+rm -rf "$DONE_DIR_APTRA"
 
 if [ -f "$ERR_FLAG_APTRA" ]; then
     rm -f "$ERR_FLAG_APTRA"
@@ -785,6 +799,10 @@ while IFS=" " read -r rsize fname; do
     fi
 done < <(curl -s -k -u "$USER_PASS_GQ" "$SFTP_BASE_GQ/" 2>/dev/null | awk '"'"'/^-/{{sz=$5; for(i=1;i<=8;i++)$i=""; sub(/^[ \t]+/, ""); print sz, $0}}'"'"')
 
+DONE_DIR_GQ="/tmp/gq_done_$$"
+rm -rf "$DONE_DIR_GQ"
+mkdir -p "$DONE_DIR_GQ"
+
 idx=0
 for f in "${{files[@]}}"; do
     idx=$((idx + 1))
@@ -794,16 +812,20 @@ for f in "${{files[@]}}"; do
     rsize="${{remote_sizes_gq[$fname]}}"
 
     if [ -n "$rsize" ] && [ "$rsize" -eq "$local_size" ] && [ "$local_size" -gt 0 ]; then
-        echo "[GOOGLEQA ARCHIVES] ⏩ [$idx/$TOTAL] Bỏ qua (đã có trên server, khớp $local_size byte): $fname"
+        touch "$DONE_DIR_GQ/$idx"
+        done_cnt=$(ls -1 "$DONE_DIR_GQ" 2>/dev/null | wc -l)
+        echo "[GOOGLEQA ARCHIVES] ⏩ [$done_cnt/$TOTAL] Bỏ qua (đã có trên server, khớp $local_size byte): $fname"
         continue
     fi
 
     (
-        echo "[GOOGLEQA ARCHIVES] >>> [$idx/$TOTAL] Đang upload: $fname ($hsize) ..."
+        echo "[GOOGLEQA ARCHIVES] >>> [Khởi chạy $idx/$TOTAL] Đang upload: $fname ($hsize) ..."
         if curl -sS -k -u "$USER_PASS_GQ" --ftp-create-dirs -T "$f" "$SFTP_BASE_GQ/$fname"; then
-            echo "[GOOGLEQA ARCHIVES] ✓ [$idx/$TOTAL] Hoàn thành: $fname"
+            touch "$DONE_DIR_GQ/$idx"
+            done_cnt=$(ls -1 "$DONE_DIR_GQ" 2>/dev/null | wc -l)
+            echo "[GOOGLEQA ARCHIVES] ✓ [$done_cnt/$TOTAL hoàn tất] $fname"
         else
-            echo "[GOOGLEQA ARCHIVES] ✗ [$idx/$TOTAL] Thất bại: $fname" >&2
+            echo "[GOOGLEQA ARCHIVES] ✗ [Thất bại] $fname" >&2
             touch "$ERR_FLAG_GQ"
         fi
     ) &
@@ -813,7 +835,13 @@ for f in "${{files[@]}}"; do
     done
 done
 
+pending_jobs=$(jobs -r -p | wc -l)
+if [ "$pending_jobs" -gt 0 ]; then
+    echo "[GOOGLEQA ARCHIVES] ⏳ Đã điều phối xong toàn bộ file zip. Đang chờ $pending_jobs luồng tải nền còn lại..."
+fi
+
 wait
+rm -rf "$DONE_DIR_GQ"
 
 if [ -f "$ERR_FLAG_GQ" ]; then
     rm -f "$ERR_FLAG_GQ"
