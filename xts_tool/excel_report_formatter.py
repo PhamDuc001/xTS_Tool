@@ -78,6 +78,7 @@ def format_single_suite_report(source_path: str, target_path: str,
     - Unmerges B17:F17
     - Deletes rows 15 to 40 (max_row - 14)
     - Preserves =E12/C12 formula and formatting.
+    - Removes AutoFilter from sheet 'Test Result_Detail' and all other sheets.
     """
     if not os.path.exists(source_path):
         return False, f"File nguồn không tồn tại: {source_path}"
@@ -136,6 +137,12 @@ def format_single_suite_report(source_path: str, target_path: str,
         e12_val = str(ws["E12"].value or "")
         if not e12_val or not e12_val.startswith("="):
             ws["E12"] = "=E12/C12"
+
+        # 5. Remove AutoFilter from 'Test Result_Detail' and all sheets
+        for sname in wb.sheetnames:
+            ws_sheet = wb[sname]
+            if ws_sheet.auto_filter and ws_sheet.auto_filter.ref:
+                ws_sheet.auto_filter.ref = None
 
         wb.save(target_path)
         return True, "Chuẩn hóa file 03 thành công."

@@ -72,6 +72,9 @@ Xử lý bằng thư viện `openpyxl` trên Python Windows cực nhanh (< 1 gi�
    - Quét và unmerge toàn bộ các merged ranges giao cắt với hàng 15 đến 40 trước khi xóa.
    - Xóa các dòng thừa từ 15 đến 40 (`ws.delete_rows(15, ws.max_row - 14)`).
    - Bảo toàn công thức `=E12/C12` tại ô `H12` và các sheet con (`Test Result_Detail`, `Failed Test Cases`).
+4. **Loại bỏ chế độ lọc (AutoFilter):**
+   - Mặc định các file xuất từ APTRA gán bộ lọc AutoFilter tại dòng tiêu đề của sheet `Test Result_Detail`.
+   - Tool tự động xóa bỏ chế độ lọc (`ws.auto_filter.ref = None`) cho toàn bộ các sheet trong file `03.*.xlsx`, giúp bảng tính sạch sẽ, không hiển thị các nút mũi tên dropdown lọc dữ liệu.
 
 ---
 

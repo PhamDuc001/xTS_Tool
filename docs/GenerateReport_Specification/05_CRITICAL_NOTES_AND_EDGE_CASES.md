@@ -19,6 +19,7 @@
 11. [Kỹ Thuật Làm Sạch Hàng 15–40 và Tránh Hỏng File Excel Do Unmerge](#11-kỹ-thuật-làm-sạch-hàng-1540-và-tránh-hỏng-file-excel-do-unmerge)
 12. [Bảo Toàn Định Dạng Ngày Tháng (Date String) & Công Thức Tỷ Lệ Pass](#12-bảo-toàn-định-dạng-ngày-tháng-date-string--công-thức-tỷ-lệ-pass)
 13. [Tách Biệt Luồng Báo Cáo Nhanh (Fast-Track) Khỏi Gói Lưu Trữ Nặng (Heavy Archives)](#13-tách-biệt-luồng-báo-cáo-nhanh-fast-track-khỏi-gói-lưu-trữ-nặng-heavy-archives)
+14. [Xóa Bỏ Chế Độ Lọc (AutoFilter) Trên Sheet Test Result_Detail](#14-xóa-bỏ-chế-độ-lọc-autofilter-trên-sheet-test-result_detail)
 
 ---
 
@@ -375,4 +376,24 @@ flowchart TD
      - **Mặc định:** Checkbox `[ ] 📦 Tự động upload gói zip nặng (Bước 8)` không được chọn. Khi bấm *🚀 Chạy Toàn Bộ Quy Trình (Run All)*, tool sẽ chạy Fast-Track (Bước 1 $\rightarrow$ 7) và thông báo hoàn tất thành công. Bước 8 hiển thị trạng thái `⚪ Bỏ qua (tùy chọn)`.
      - **Tự động nối tiếp:** Nếu kỹ sư tích chọn `[x] 📦 Tự động upload gói zip nặng (Bước 8)` trước khi chạy, tool sẽ tự động chạy liên tục từ Bước 1 đến hết Bước 8.
      - **Chạy thủ công độc lập:** Kỹ sư có thể bấm nút **"Chạy Bước Này"** tại dòng Bước 8 bất kỳ lúc nào (ví dụ: chạy vào giờ nghỉ trưa hoặc cuối ngày) mà không sợ ảnh hưởng đến dữ liệu báo cáo Excel đã xuất bản.
+
+---
+
+## 14. Xóa Bỏ Chế Độ Lọc (AutoFilter) Trên Sheet Test Result_Detail
+
+### ⚠️ Vấn đề trong docx / tài liệu cũ:
+- Trong các file báo cáo ban đầu do tool APTRA sinh ra (`*Result.xlsx`), sheet `Test Result_Detail` được mặc định thiết lập bộ lọc tự động (**AutoFilter**) trên dòng tiêu đề bảng (ví dụ dải `B4:J695`).
+- Khi mở file Excel, các mũi tên dropdown lọc xuất hiện ở từng cột (`Module`, `Pass`, `Fail`...) làm che khuất một phần chữ tiêu đề và gây vướng víu cho kỹ sư kiểm tra hoặc khi trình chiếu báo cáo.
+- Tài liệu cũ không đề cập đến việc loại bỏ bộ lọc này.
+
+### ✅ Quy chuẩn kỹ thuật chuẩn hóa:
+Trong hàm `format_single_suite_report()` của module [`excel_report_formatter.py`](file:///D:/Training/Guide/YAK/xts_tool/excel_report_formatter.py), tool tự động duyệt qua toàn bộ các sheet của file `03.*.xlsx` và đặt `auto_filter.ref = None`:
+```python
+# Loại bỏ AutoFilter trên Test Result_Detail và toàn bộ các sheet
+for sname in wb.sheetnames:
+    ws_sheet = wb[sname]
+    if ws_sheet.auto_filter and ws_sheet.auto_filter.ref:
+        ws_sheet.auto_filter.ref = None
+```
+Khi lưu file qua thư viện `openpyxl`, tag `<autoFilter>` sẽ được loại bỏ hoàn toàn khỏi cấu trúc XML của worksheet. Khi mở file trên Microsoft Excel, toàn bộ các bảng hiển thị sạch sẽ, chuyên nghiệp, không còn các nút lọc dropdown.
 
