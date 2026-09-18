@@ -29,6 +29,7 @@
       "password": "lge@1234"
     }
   ],
+  "default_password": "lge@1234",
   "generate_report": {
     "model_full": "Nissan_AIVI_Full_12.3_PZ1D_26MY",
     "model_code": "PZ1D",
@@ -59,7 +60,7 @@
     "google_key": {
       "name": "Google Key",
       "path": "/home/lge/Environment/PreSetup/NissanEU/",
-      "script": "./addGoogle_key_Nissan_P33A.sh",
+      "script": "./AddGoogle_key_Nissan.sh",
       "retry_script": "./AddGoogle_key_Nissan.sh \"AttestationChainTee\""
     },
     "mtc_script": {

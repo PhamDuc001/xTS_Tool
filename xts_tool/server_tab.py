@@ -11,7 +11,7 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QLineEdit,
     QPushButton, QComboBox, QTableWidget, QTableWidgetItem, QHeaderView,
     QTextEdit, QProgressBar, QGroupBox, QMessageBox, QFileDialog, QSplitter,
-    QTabWidget, QAbstractItemView
+    QTabWidget, QAbstractItemView, QApplication
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QTextCursor, QTextCharFormat, QFont
@@ -37,6 +37,7 @@ class ServerTab(QWidget):
         self.worker = None
         self.report_worker = None
         self._log_need_newline = False
+        self._active_auth_dialogs = []
 
         # Loaded paths
         default_paths_cfg = self.config.get("default_paths", {})
@@ -45,7 +46,7 @@ class ServerTab(QWidget):
             "userdebug_path": "",
             "user_path": "",
             "google_key_path": default_paths_cfg.get("google_key", {}).get("path", "/home/lge/Environment/PreSetup/NissanEU/"),
-            "google_key_script": default_paths_cfg.get("google_key", {}).get("script", "./addGoogle_key_Nissan_P33A.sh"),
+            "google_key_script": default_paths_cfg.get("google_key", {}).get("script", "./AddGoogle_key_Nissan.sh"),
             "google_key_retry_script": default_paths_cfg.get("google_key", {}).get("retry_script", './AddGoogle_key_Nissan.sh "AttestationChainTee"'),
             "mtc_path": default_paths_cfg.get("mtc_script", {}).get("path", "/home/lge/Environment/scripts/PZ1D_26MY/"),
             "mtc_scripts": default_paths_cfg.get("mtc_script", {}).get("scripts", ["./MTC_PZ1D_26MY.sh", "./ChangeLanguage.sh"]),
@@ -71,10 +72,10 @@ class ServerTab(QWidget):
         top_layout.setHorizontalSpacing(10)
         top_layout.setVerticalSpacing(6)
 
-        default_host = default_server_info.get("host", "192.168.1.100") if default_server_info else "192.168.1.100"
+        default_host = default_server_info.get("host", "10.218.153.44") if default_server_info else "10.218.153.44"
         default_port = str(default_server_info.get("port", 22)) if default_server_info else "22"
         default_user = default_server_info.get("username", "lge") if default_server_info else "lge"
-        default_pass = default_server_info.get("password", "") if default_server_info else ""
+        default_pass = (default_server_info.get("password") if default_server_info else None) or self.config.get("default_password", "lge@1234")
 
         # SSH Fields
         top_layout.addWidget(QLabel("Host/IP:"), 0, 0)
@@ -598,7 +599,9 @@ class ServerTab(QWidget):
             ssh_mgr=self.ssh,
             steps=self.current_steps,
             single_step_idx=single_step_idx,
-            timeouts=self.config.get("timeouts", {})
+            timeouts=self.config.get("timeouts", {}),
+            server_host=self.txt_host.text().strip() or getattr(self.ssh, "host", ""),
+            suite_name=suite
         )
 
         self.worker.log_signal.connect(self._append_log)
@@ -612,6 +615,17 @@ class ServerTab(QWidget):
         self.worker.start()
 
     def _abort_execution(self):
+        if hasattr(self, "_active_auth_dialogs"):
+            for dlg in list(self._active_auth_dialogs):
+                try:
+                    dlg.close()
+                except Exception:
+                    pass
+            self._active_auth_dialogs.clear()
+        host = self.txt_host.text().strip() or getattr(self.ssh, "host", "")
+        if host:
+            self.tab_title_changed.emit(f"Server {host}")
+
         if self.worker and self.worker.isRunning():
             self._append_log("Đang yêu cầu dừng tiến trình...", "WARN")
             self.worker.request_abort()
@@ -633,20 +647,68 @@ class ServerTab(QWidget):
         percent = int((current / total) * 100) if total > 0 else 0
         self.progress_bar.setValue(percent)
 
-    def _on_worker_manual_auth(self, step_idx: int, prompt_msg: str):
-        dlg = ManualAuthDialog(self, prompt_msg)
-        res = dlg.exec()
-        if res == ManualAuthDialog.DialogCode.Accepted:
-            self.worker.provide_auth_response(True)
-        else:
-            self.worker.provide_auth_response(False)
+    def _on_worker_manual_auth(self, auth_info: dict):
+        host = auth_info.get("server_host", "") or self.txt_host.text().strip() or getattr(self.ssh, "host", "Server")
+        suite = auth_info.get("suite_name", "") or self.combo_suite.currentText()
+        serial = auth_info.get("device_serial", "")
+        step_title = auth_info.get("step_title", "")
+        prompt = auth_info.get("prompt", "")
+
+        # Cập nhật nhãn Tab để báo hiệu cần xác thực
+        self.tab_title_changed.emit(f"⚠️ [AUTH] {host}")
+
+        dlg = ManualAuthDialog(
+            parent=None,
+            prompt_msg=prompt,
+            server_host=host,
+            suite_name=suite,
+            device_serial=serial,
+            step_title=step_title
+        )
+
+        if not hasattr(self, "_active_auth_dialogs"):
+            self._active_auth_dialogs = []
+        self._active_auth_dialogs.append(dlg)
+
+        def handle_response(confirmed: bool):
+            if self.worker and self.worker.isRunning():
+                self.worker.provide_auth_response(confirmed)
+            if dlg in self._active_auth_dialogs:
+                self._active_auth_dialogs.remove(dlg)
+            self.tab_title_changed.emit(f"Server {host}")
+
+        dlg.auth_responded.connect(handle_response)
+
+        # Cascade offset positioning
+        screen = QApplication.primaryScreen().geometry()
+        offset = (len(self._active_auth_dialogs) - 1) * 35
+        base_x = (screen.width() - dlg.width()) // 2 + offset
+        base_y = (screen.height() - dlg.height()) // 2 + offset
+        dlg.move(max(50, base_x), max(50, base_y))
+
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
 
     def _on_worker_step_error(self, step_idx: int, step_title: str, error_msg: str):
-        dlg = ErrorDecisionDialog(self, step_title, error_msg)
+        host = self.txt_host.text().strip() or getattr(self.ssh, "host", "")
+        suite = self.combo_suite.currentText()
+        dlg = ErrorDecisionDialog(self, step_title, error_msg, server_host=host, suite_name=suite)
         dlg.exec()
         self.worker.provide_error_decision(dlg.decision)
 
     def _on_worker_finished(self, success: bool, msg: str):
+        host = self.txt_host.text().strip() or getattr(self.ssh, "host", "")
+        if host:
+            self.tab_title_changed.emit(f"Server {host}")
+        if hasattr(self, "_active_auth_dialogs"):
+            for dlg in list(self._active_auth_dialogs):
+                try:
+                    dlg.close()
+                except Exception:
+                    pass
+            self._active_auth_dialogs.clear()
+
         self.btn_run_all.setEnabled(True)
         self.btn_abort.setEnabled(False)
         if success:

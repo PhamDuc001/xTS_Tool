@@ -36,7 +36,7 @@ def build_workflow_steps(suite_name: str, paths: Dict[str, Any]) -> List[Dict[st
     userdebug_dir = paths.get("userdebug_path", "")
     user_dir = paths.get("user_path", "")
     gkey_dir = paths.get("google_key_path", "")
-    gkey_script = paths.get("google_key_script", "./addGoogle_key_Nissan_P33A.sh")
+    gkey_script = paths.get("google_key_script", "./AddGoogle_key_Nissan.sh")
     
     mtc_dir = paths.get("mtc_path", "")
     mtc_scripts = paths.get("mtc_scripts", ["./MTC_PZ1D_26MY.sh", "./ChangeLanguage.sh"])
@@ -182,15 +182,20 @@ class WorkflowWorker(QThread):
     progress_signal = pyqtSignal(int, int)  # (current, total)
     
     # Interactive signals
-    manual_auth_signal = pyqtSignal(int, str)  # (step_idx, message)
+    manual_auth_signal = pyqtSignal(dict)  # (auth_info: dict with step_idx, step_title, prompt, server_host, suite_name, device_serial)
     step_error_signal = pyqtSignal(int, str, str)  # (step_idx, step_title, error_message)
 
     def __init__(self, ssh_mgr: SSHManager, steps: List[Dict[str, Any]], 
-                 single_step_idx: Optional[int] = None, timeouts: Optional[Dict[str, int]] = None):
+                 single_step_idx: Optional[int] = None, timeouts: Optional[Dict[str, int]] = None,
+                 server_host: str = "", suite_name: str = ""):
         super().__init__()
         self.ssh = ssh_mgr
         self.steps = steps
         self.single_step_idx = single_step_idx
+        self.server_host = server_host or getattr(ssh_mgr, "host", "")
+        self.suite_name = suite_name
+        self._current_step_idx = single_step_idx or 0
+        self._device_serial = ""
         self.timeouts = timeouts or {
             "bootloader_wait_sec": 30,
             "adb_reboot_wait_sec": 80,
@@ -260,6 +265,7 @@ class WorkflowWorker(QThread):
                 success_all = False
                 break
 
+            self._current_step_idx = orig_idx
             self.progress_signal.emit(i + 1, total)
             self.step_started_signal.emit(orig_idx, step["title"])
             self.log(f"\n--- [{i+1}/{total}] {step['title']} ---", "INFO")
@@ -531,12 +537,29 @@ class WorkflowWorker(QThread):
             return False
 
         serial = self._get_device_serial()
+        if serial:
+            self._device_serial = serial
 
-        for cmd_item in commands:
+        for idx, cmd_item in enumerate(commands):
             if self._abort_requested:
                 return False
 
             actual_cmd = cmd_item
+
+            # NẾU LÀ CHANGELANGUAGE.SH CHẠY SAU MTC (MTC hardReset làm khởi động lại Head Unit):
+            if "ChangeLanguage.sh" in actual_cmd and idx > 0:
+                self.log("Phát hiện ChangeLanguage sau script MTC. Đang chờ Head Unit khởi động lại từ lệnh hardReset...", "INFO")
+                # Chờ 15s để thiết bị ngắt kết nối và reboot, timeout tối đa 90s để xuất hiện trong adb devices
+                if not self._wait_for_adb(initial_sleep=15, timeout_sec=self.timeouts.get("adb_reboot_wait_sec", 90)):
+                    return False
+                # Đảm bảo ADB kết nối ổn định và phản hồi 'adb shell echo ok'
+                if not self._ensure_adb_ready("Trước khi chạy ChangeLanguage", post_sleep=10):
+                    return False
+                # Cập nhật lại serial sau reboot nếu trước đó chưa lấy được
+                serial = self._get_device_serial()
+                if serial:
+                    self._device_serial = serial
+
             if "{serial}" in actual_cmd:
                 actual_cmd = actual_cmd.replace("{serial}", serial)
             elif "ChangeLanguage.sh" in actual_cmd and serial and len(actual_cmd.split()) == 1:
@@ -628,7 +651,19 @@ class WorkflowWorker(QThread):
 
         self._auth_event.clear()
         self._auth_result = False
-        self.manual_auth_signal.emit(self.single_step_idx or 0, prompt)
+
+        if not self._device_serial:
+            self._device_serial = self._get_device_serial()
+
+        auth_data = {
+            "step_idx": getattr(self, "_current_step_idx", self.single_step_idx or 0),
+            "step_title": step.get("title", "Xác thực thủ công"),
+            "prompt": prompt,
+            "server_host": getattr(self, "server_host", "") or getattr(self.ssh, "host", ""),
+            "suite_name": getattr(self, "suite_name", ""),
+            "device_serial": self._device_serial
+        }
+        self.manual_auth_signal.emit(auth_data)
 
         # Wait for user click in Dialog
         self._auth_event.wait()

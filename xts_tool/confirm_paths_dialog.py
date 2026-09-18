@@ -3,9 +3,10 @@ Dialogs for Confirming Paths, Manual Authentication, and Error Handling.
 """
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, 
-    QPushButton, QGroupBox, QFormLayout, QTextEdit, QMessageBox
+    QPushButton, QGroupBox, QFormLayout, QTextEdit, QMessageBox,
+    QFrame, QGridLayout
 )
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QFont
 
 
@@ -134,56 +135,94 @@ class ConfirmPathsDialog(QDialog):
 
 class ManualAuthDialog(QDialog):
     """
-    Modal alert requesting the engineer to perform manual authentication on device.
+    Non-modal alert requesting the engineer to perform manual authentication on device.
+    Supports server, suite, and serial identification.
     """
-    def __init__(self, parent, prompt_msg: str):
+    auth_responded = pyqtSignal(bool)  # True: Confirm / Continue, False: Abort
+
+    def __init__(self, parent=None, prompt_msg: str = "", server_host: str = "", 
+                 suite_name: str = "", device_serial: str = "", step_title: str = ""):
         super().__init__(parent)
-        self.setWindowTitle("Yêu Cầu Xác Thực Thủ Công Trên Thiết Bị")
-        self.resize(520, 260)
-        self.setModal(True)
+        self.setModal(False)
+        self._responded = False
+
+        title_tag = f"[{suite_name or 'xTS'}] {server_host}" if server_host else "DUT"
+        self.setWindowTitle(f"⚠️ Manual Authentication - {title_tag}")
+        self.resize(560, 320)
 
         layout = QVBoxLayout(self)
 
-        icon_label = QLabel("⚠️ XÁC THỰC THỦ CÔNG CẦN THỰC HIỆN")
-        icon_label.setStyleSheet("color: #ff9800; font-size: 16px; font-weight: bold;")
-        layout.addWidget(icon_label)
+        # Header Badge nhận diện máy & server
+        badge_frame = QFrame()
+        badge_frame.setStyleSheet("background-color: #2b2b2b; border: 1px solid #ff9800; border-radius: 6px; padding: 6px;")
+        badge_layout = QGridLayout(badge_frame)
+        badge_layout.addWidget(QLabel(f"🖥️ <b>Server:</b> <span style='color: #4fc3f7; font-size: 13px;'>{server_host or 'N/A'}</span>"), 0, 0)
+        badge_layout.addWidget(QLabel(f"📦 <b>Suite:</b> <span style='color: #81c784; font-size: 13px;'>{suite_name or 'N/A'}</span>"), 0, 1)
+        badge_layout.addWidget(QLabel(f"📱 <b>DUT Serial:</b> <span style='color: #ffb74d; font-family: Consolas;'>{device_serial or 'Unknown'}</span>"), 1, 0)
+        badge_layout.addWidget(QLabel(f"📌 <b>Step:</b> <span style='color: #e0e0e0;'>{step_title or 'Manual Authentication'}</span>"), 1, 1)
+        layout.addWidget(badge_frame)
 
+        # Hướng dẫn xác thực
         msg_box = QTextEdit()
         msg_box.setReadOnly(True)
         msg_box.setPlainText(prompt_msg)
-        msg_box.setStyleSheet("background-color: #262626; color: #e0e0e0; font-size: 13px; padding: 8px;")
+        msg_box.setStyleSheet("background-color: #1e1e1e; color: #fff; font-size: 13px; padding: 8px; border-radius: 4px;")
         layout.addWidget(msg_box)
 
+        # Nút bấm hành động
         btn_layout = QHBoxLayout()
-        btn_abort = QPushButton("✖ Hủy bỏ (Abort)")
-        btn_abort.setStyleSheet("background-color: #c62828; color: white; padding: 6px 14px;")
-        btn_abort.clicked.connect(self.reject)
+        btn_abort = QPushButton("✖ Abort")
+        btn_abort.setStyleSheet("background-color: #c62828; color: white; padding: 7px 16px; font-weight: bold;")
+        btn_abort.clicked.connect(self._on_abort)
 
-        btn_confirm = QPushButton("✔ Đã hoàn tất xác thực (Tiếp tục)")
-        btn_confirm.setStyleSheet("background-color: #2e7d32; color: white; font-weight: bold; padding: 6px 18px;")
-        btn_confirm.clicked.connect(self.accept)
+        btn_confirm = QPushButton("✔ Complete Authentication (Continue)")
+        btn_confirm.setStyleSheet("background-color: #2e7d32; color: white; font-weight: bold; padding: 7px 20px; font-size: 13px;")
+        btn_confirm.clicked.connect(self._on_confirm)
 
         btn_layout.addWidget(btn_abort)
         btn_layout.addStretch()
         btn_layout.addWidget(btn_confirm)
-
         layout.addLayout(btn_layout)
+
+    def _on_confirm(self):
+        if not self._responded:
+            self._responded = True
+            self.auth_responded.emit(True)
+        self.accept()
+
+    def _on_abort(self):
+        if not self._responded:
+            self._responded = True
+            self.auth_responded.emit(False)
+        self.reject()
+
+    def closeEvent(self, event):
+        if not self._responded:
+            self._responded = True
+            self.auth_responded.emit(False)
+        super().closeEvent(event)
 
 
 class ErrorDecisionDialog(QDialog):
     """
     Prompt user when a command/step fails: Retry, Skip, or Abort.
     """
-    def __init__(self, parent, step_title: str, error_details: str):
+    def __init__(self, parent, step_title: str, error_details: str, server_host: str = "", suite_name: str = ""):
         super().__init__(parent)
-        self.setWindowTitle("Lỗi Thực Thi Bước Pre-Setup")
-        self.resize(540, 260)
+        title_tag = f"[{suite_name}] {server_host} - " if (server_host or suite_name) else ""
+        self.setWindowTitle(f"{title_tag}Step Execution Error")
+        self.resize(560, 290)
         self.setModal(True)
         self.decision = "ABORT"
 
         layout = QVBoxLayout(self)
 
-        lbl = QLabel(f"<b>Bước thất bại:</b> <span style='color: #f44336;'>{step_title}</span>")
+        if server_host or suite_name:
+            lbl_srv = QLabel(f"🖥️ <b>Server:</b> <span style='color: #4fc3f7;'>{server_host or 'N/A'}</span> &nbsp;&nbsp;|&nbsp;&nbsp; 📦 <b>Suite:</b> <span style='color: #81c784;'>{suite_name or 'N/A'}</span>")
+            lbl_srv.setStyleSheet("background-color: #2b2b2b; padding: 5px 8px; border-radius: 4px;")
+            layout.addWidget(lbl_srv)
+
+        lbl = QLabel(f"<b>Failed Step:</b> <span style='color: #f44336;'>{step_title}</span>")
         lbl.setStyleSheet("font-size: 14px;")
         layout.addWidget(lbl)
 
@@ -193,19 +232,19 @@ class ErrorDecisionDialog(QDialog):
         txt_err.setStyleSheet("background-color: #262626; color: #ff8a80; font-family: Consolas; font-size: 12px;")
         layout.addWidget(txt_err)
 
-        lbl_ask = QLabel("Vui lòng chọn hướng xử lý tiếp theo:")
+        lbl_ask = QLabel("Please choose an action:")
         layout.addWidget(lbl_ask)
 
         btn_layout = QHBoxLayout()
-        btn_retry = QPushButton("🔄 Thử lại bước này (Retry)")
+        btn_retry = QPushButton("🔄 Retry Step")
         btn_retry.setStyleSheet("background-color: #0288d1; color: white; font-weight: bold; padding: 6px 12px;")
         btn_retry.clicked.connect(self._retry)
 
-        btn_skip = QPushButton("⏩ Bỏ qua bước này (Skip)")
+        btn_skip = QPushButton("⏩ Skip Step")
         btn_skip.setStyleSheet("background-color: #f57c00; color: white; padding: 6px 12px;")
         btn_skip.clicked.connect(self._skip)
 
-        btn_abort = QPushButton("⏹ Hủy bỏ quy trình (Abort)")
+        btn_abort = QPushButton("⏹ Abort Execution")
         btn_abort.setStyleSheet("background-color: #c62828; color: white; font-weight: bold; padding: 6px 12px;")
         btn_abort.clicked.connect(self._abort)
 
