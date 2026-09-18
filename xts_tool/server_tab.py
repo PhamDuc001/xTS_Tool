@@ -19,6 +19,7 @@ from PyQt6.QtGui import QColor, QTextCursor, QTextCharFormat, QFont
 from ssh_client import SSHManager
 from workflow_runner import WorkflowWorker, build_workflow_steps, StepDecision
 from confirm_paths_dialog import ConfirmPathsDialog, ManualAuthDialog, ErrorDecisionDialog
+from hu_settings_dialog import HUSettingsDialog
 from report_collector import ReportOrganizeWorker
 from generate_report_tab import GenerateReportTab
 
@@ -157,6 +158,11 @@ class ServerTab(QWidget):
         self.btn_confirm_paths = QPushButton("📂 Xác nhận Đường Dẫn Firmware & Scripts...")
         self.btn_confirm_paths.clicked.connect(self._open_confirm_paths_dialog)
         cfg_layout.addWidget(self.btn_confirm_paths)
+
+        self.btn_setting_hu = QPushButton("📱 Setting HU")
+        self.btn_setting_hu.setStyleSheet("background-color: #1565c0; color: white; font-weight: bold; padding: 5px 12px;")
+        self.btn_setting_hu.clicked.connect(self._open_setting_hu_dialog)
+        cfg_layout.addWidget(self.btn_setting_hu)
 
         self.lbl_paths_summary = QLabel("Paths: Chưa quét thư mục")
         self.lbl_paths_summary.setStyleSheet("color: #ffa726; font-style: italic;")
@@ -494,6 +500,13 @@ class ServerTab(QWidget):
             self._update_paths_summary()
             self._rebuild_steps_table()
             self._append_log("Đã cập nhật cấu hình đường dẫn thành công.", "SUCCESS")
+
+    def _open_setting_hu_dialog(self):
+        if not self.ssh.is_connected():
+            QMessageBox.warning(self, "Chưa kết nối SSH", "Vui lòng kết nối SSH tới server trước khi Setting HU.")
+            return
+        dlg = HUSettingsDialog(self, self.ssh, self.config)
+        dlg.exec()
 
     # -------------------------------------------------------------
     # Pre-Setup Steps Table & Suite Selection

@@ -70,18 +70,49 @@ class SSHManager:
         transport = self.client.get_transport()
         return transport is not None and transport.is_active()
 
+    ENV_PREFIX = (
+        'export PATH="$HOME/Environment/AndroidSDK/platform-tools:'
+        '/home/lge/Environment/AndroidSDK/platform-tools:'
+        '/usr/lib/android-sdk/platform-tools:'
+        '$HOME/Environment/AndroidSDK/cmdline-tools/tools/bin:'
+        '$HOME/bin:$HOME/.local/bin:'
+        '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"; '
+    )
+
+    def _wrap_command(self, cmd: str) -> str:
+        """Prepends essential environment PATH to commands for non-interactive SSH shells."""
+        clean = cmd.strip()
+        if clean.startswith("export PATH=") or clean.startswith("bash -l"):
+            return cmd
+        return f"{self.ENV_PREFIX}{cmd}"
+
     def run_command(self, cmd: str, timeout: int = 60) -> Tuple[int, str, str]:
         """Runs a synchronous command on remote server."""
         if not self.is_connected():
             return -1, "", "SSH chưa được kết nối."
         try:
-            stdin, stdout, stderr = self.client.exec_command(cmd, timeout=timeout)
+            wrapped = self._wrap_command(cmd)
+            stdin, stdout, stderr = self.client.exec_command(wrapped, timeout=timeout)
             out = stdout.read().decode("utf-8", errors="replace")
             err = stderr.read().decode("utf-8", errors="replace")
             exit_code = stdout.channel.recv_exit_status()
             return exit_code, out, err
         except Exception as e:
             return -1, "", str(e)
+
+    def upload_file(self, local_path: str, remote_path: str) -> Tuple[bool, str]:
+        """Uploads a local file to remote server via SFTP."""
+        if not self.is_connected():
+            return False, "SSH chưa được kết nối."
+        if not os.path.exists(local_path):
+            return False, f"File nguồn không tồn tại: {local_path}"
+        try:
+            sftp = self.client.open_sftp()
+            sftp.put(local_path, remote_path)
+            sftp.close()
+            return True, f"Upload thành công: {remote_path}"
+        except Exception as e:
+            return False, f"Lỗi upload SFTP: {str(e)}"
 
     def run_command_stream(self, cmd: str, output_callback: Optional[Callable[[str], None]] = None,
                            check_abort: Optional[Callable[[], bool]] = None,
@@ -104,7 +135,8 @@ class SSHManager:
             transport = self.client.get_transport()
             channel = transport.open_session()
             channel.get_pty(term="xterm", width=120, height=40)
-            channel.exec_command(cmd)
+            wrapped = self._wrap_command(cmd)
+            channel.exec_command(wrapped)
 
             full_output = []
             prompt_buffer = ""

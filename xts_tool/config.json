@@ -89,5 +89,19 @@
     "adb_reboot_wait_sec": 75,
     "fastbootd_wait_sec": 45,
     "poll_interval_sec": 3
-  }
+  },
+  "wifi_networks": [
+    {
+      "ssid": "GG",
+      "password": "11111112"
+    },
+    {
+      "ssid": "GG_Cert_Test",
+      "password": "1234567890"
+    },
+    {
+      "ssid": "GG_Cert_Test_5G",
+      "password": "1234567890"
+    }
+  ]
 }
