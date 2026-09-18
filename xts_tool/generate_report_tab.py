@@ -121,7 +121,7 @@ class GenerateReportTab(QWidget):
         # -------------------------------------------------------------
         # 1. Metadata Configuration Group
         # -------------------------------------------------------------
-        meta_group = QGroupBox("Thông Tin Dự Án & Phiên Bản Báo Cáo Chứng Chỉ")
+        meta_group = QGroupBox("Project & Certification Report Metadata")
         meta_layout = QGridLayout(meta_group)
         meta_layout.setContentsMargins(8, 8, 8, 8)
         meta_layout.setHorizontalSpacing(10)
@@ -185,13 +185,13 @@ class GenerateReportTab(QWidget):
         meta_layout.addWidget(self.txt_raw_path, 3, 1, 1, 7)
 
         # Row 4: Previous Summary Template Path
-        meta_layout.addWidget(QLabel("<b>Summary Mẫu Trước:</b>"), 4, 0)
+        meta_layout.addWidget(QLabel("<b>Previous Summary:</b>"), 4, 0)
         self.txt_prev_summary = QLineEdit()
-        self.txt_prev_summary.setPlaceholderText("Đường dẫn file Summary phiên bản trước (trên GOOGLEQA hoặc máy Local)")
+        self.txt_prev_summary.setPlaceholderText("Path to previous version Summary file (on GOOGLEQA or Local PC)")
         meta_layout.addWidget(self.txt_prev_summary, 4, 1, 1, 5)
 
-        self.btn_detect_prev = QPushButton("🔍 Dò Bản Gần Nhất")
-        self.btn_detect_prev.setToolTip("Tự động quét trên GOOGLEQA để lấy file Summary của version trước gần nhất")
+        self.btn_detect_prev = QPushButton("🔍 Auto Detect Latest")
+        self.btn_detect_prev.setToolTip("Auto detect latest version Summary from GOOGLEQA")
         self.btn_detect_prev.clicked.connect(self._auto_detect_prev_summary)
         meta_layout.addWidget(self.btn_detect_prev, 4, 6)
 
@@ -202,13 +202,13 @@ class GenerateReportTab(QWidget):
         # Row 5: APTRA Path (Server)
         meta_layout.addWidget(QLabel("<b>APTRA Path:</b>"), 5, 0)
         self.txt_aptra_path = QLineEdit("/home/aptra/APTRA/Nissan_AIVI_Full_12.3_PZ1D_26MY/YAK.31.03.30")
-        self.txt_aptra_path.setPlaceholderText("Thư mục trên APTRA (sync data & lấy *Result.xlsx)")
+        self.txt_aptra_path.setPlaceholderText("APTRA directory (sync data & fetch *Result.xlsx)")
         meta_layout.addWidget(self.txt_aptra_path, 5, 1, 1, 7)
 
         # Row 6: GOOGLEQA Upload Path (Server)
         meta_layout.addWidget(QLabel("<b>GOOGLEQA Upload:</b>"), 6, 0)
         self.txt_googleqa_dest = QLineEdit("/home/googleqa/GOOGLEQA/Official_Test_results/Nissan_AIVI_Full_12.3_PZ1D_26MY/YAK.31.03.30")
-        self.txt_googleqa_dest.setPlaceholderText("Thư mục phát hành trên GOOGLEQA (upload file 00 - 03 & Summary)")
+        self.txt_googleqa_dest.setPlaceholderText("GOOGLEQA release directory (upload file 00 - 03 & Summary)")
         meta_layout.addWidget(self.txt_googleqa_dest, 6, 1, 1, 7)
 
         main_layout.addWidget(meta_group)
@@ -224,25 +224,25 @@ class GenerateReportTab(QWidget):
         self.btn_run_all.clicked.connect(self._run_all)
         ctrl_layout.addWidget(self.btn_run_all)
 
-        self.btn_stop = QPushButton("⏹ DỪNG LẠI (Stop)")
+        self.btn_stop = QPushButton("⏹ Stop")
         self.btn_stop.setEnabled(False)
         self.btn_stop.setStyleSheet("background-color: #c62828; color: white; font-weight: bold; font-size: 13px; padding: 8px 16px;")
         self.btn_stop.clicked.connect(self._stop_execution)
         ctrl_layout.addWidget(self.btn_stop)
 
-        self.btn_open_folder = QPushButton("📂 Mở Thư Mục Báo Cáo (Local)")
+        self.btn_open_folder = QPushButton("📂 Open Report Folder (Local)")
         self.btn_open_folder.setStyleSheet("font-weight: bold; padding: 8px 14px;")
         self.btn_open_folder.clicked.connect(self._open_report_folder)
         ctrl_layout.addWidget(self.btn_open_folder)
 
-        self.chk_auto_upload_heavy = QCheckBox("📦 Tự động upload gói zip nặng (Bước 8)")
-        self.chk_auto_upload_heavy.setToolTip("Mặc định bỏ chọn: Luồng chính hoàn thành siêu tốc ở Bước 7 (~1-2 phút). Bạn có thể tự bấm '▶ Chạy Bước Này' ở Bước 8 khi rảnh.")
+        self.chk_auto_upload_heavy = QCheckBox("📦 Auto upload heavy archives (Step 8)")
+        self.chk_auto_upload_heavy.setToolTip("Default unchecked: Main workflow completes in ~1-2 min at Step 7. You can click '▶ Run' on Step 8 anytime.")
         self.chk_auto_upload_heavy.setChecked(False)
         ctrl_layout.addWidget(self.chk_auto_upload_heavy)
 
         ctrl_layout.addStretch()
 
-        self.lbl_status = QLabel("Trạng thái: Sẵn sàng")
+        self.lbl_status = QLabel("Status: Ready")
         self.lbl_status.setStyleSheet("font-weight: bold; color: #1976d2;")
         ctrl_layout.addWidget(self.lbl_status)
 
@@ -261,7 +261,7 @@ class GenerateReportTab(QWidget):
         self.table_steps = QTableWidget()
         self.table_steps.setColumnCount(5)
         self.table_steps.setHorizontalHeaderLabels([
-            "Bước", "Tên Bước Quy Trình", "Mô Tả Chi Tiết", "Trạng Thái", "Hành Động"
+            "Step", "Workflow Step Name", "Detailed Description", "Status", "Action"
         ])
         self.table_steps.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         self.table_steps.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
@@ -284,7 +284,7 @@ class GenerateReportTab(QWidget):
 
         self.table_steps.setRowCount(len(STEP_TITLES))
         for idx, (title, desc) in enumerate(zip(STEP_TITLES, step_descriptions)):
-            item_num = QTableWidgetItem(f"Bước {idx+1}")
+            item_num = QTableWidgetItem(f"Step {idx+1}")
             item_num.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             self.table_steps.setItem(idx, 0, item_num)
 
@@ -297,12 +297,12 @@ class GenerateReportTab(QWidget):
             item_desc = QTableWidgetItem(desc)
             self.table_steps.setItem(idx, 2, item_desc)
 
-            item_status = QTableWidgetItem("⚪ Chờ chạy")
+            item_status = QTableWidgetItem("⚪ Pending")
             item_status.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             item_status.setForeground(QColor("#757575"))
             self.table_steps.setItem(idx, 3, item_status)
 
-            btn_run_step = QPushButton("▶ Chạy Bước Này")
+            btn_run_step = QPushButton("▶ Run")
             btn_run_step.setStyleSheet("padding: 2px 8px;")
             btn_run_step.clicked.connect(lambda _, s=idx: self._run_single_step(s))
             self.table_steps.setCellWidget(idx, 4, btn_run_step)

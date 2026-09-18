@@ -324,56 +324,56 @@ class DeviceStatusCard(QGroupBox):
 
         # Wi-Fi
         w_enabled = info.get("wifi_enabled", False)
-        ssid = info.get("wifi_ssid", "Chưa kết nối")
-        ip = info.get("wifi_ip", "Chưa có IP")
+        ssid = info.get("wifi_ssid", "Not Connected")
+        ip = info.get("wifi_ip", "No IP")
 
-        if w_enabled and ssid != "Chưa kết nối":
-            self.lbl_wifi.setText(f"🟢 Đã kết nối: <b>{ssid}</b>")
+        if w_enabled and ssid not in ["Not Connected", "Chưa kết nối"]:
+            self.lbl_wifi.setText(f"🟢 Connected: <b>{ssid}</b>")
             self.lbl_wifi.setStyleSheet("color: #4caf50;")
         elif w_enabled:
-            self.lbl_wifi.setText("🟡 Đã bật Wi-Fi (Chưa có mạng)")
+            self.lbl_wifi.setText("🟡 Wi-Fi Enabled (No Network)")
             self.lbl_wifi.setStyleSheet("color: #ffb300;")
         else:
-            self.lbl_wifi.setText("🔴 Đang tắt")
+            self.lbl_wifi.setText("🔴 Disabled (OFF)")
             self.lbl_wifi.setStyleSheet("color: #f44336;")
 
-        if ip != "Chưa có IP":
+        if ip not in ["No IP", "Chưa có IP"]:
             self.lbl_ip.setText(f"<b>{ip}</b>")
             self.lbl_ip.setStyleSheet("color: #64b5f6;")
         else:
-            self.lbl_ip.setText("Chưa có IP")
+            self.lbl_ip.setText("No IP")
             self.lbl_ip.setStyleSheet("color: #888;")
 
         # Bluetooth
         bt_on = info.get("bluetooth_on", False)
         if bt_on:
-            self.lbl_bt.setText("🟢 Bật (ON)")
+            self.lbl_bt.setText("🟢 ON")
             self.lbl_bt.setStyleSheet("color: #4caf50;")
         else:
-            self.lbl_bt.setText("🔴 Tắt (OFF)")
+            self.lbl_bt.setText("🔴 OFF")
             self.lbl_bt.setStyleSheet("color: #f44336;")
 
         # Language
-        lang = info.get("language", "Không rõ")
+        lang = info.get("language", "Unknown")
         if "en-US" in lang:
-            self.lbl_lang.setText(f"🟢 <b>{lang} (Chuẩn)</b>")
+            self.lbl_lang.setText(f"🟢 <b>{lang} (Standard)</b>")
             self.lbl_lang.setStyleSheet("color: #4caf50;")
         else:
-            self.lbl_lang.setText(f"🟠 <b>{lang}</b> (Cần đổi sang en-US)")
+            self.lbl_lang.setText(f"🟠 <b>{lang}</b> (Set to en-US)")
             self.lbl_lang.setStyleSheet("color: #ff9800;")
 
         # Time format
-        tf = info.get("time_format", "Không rõ")
+        tf = info.get("time_format", "Unknown")
         if "12h" in tf:
-            self.lbl_time.setText(f"🟢 <b>{tf} (Chuẩn)</b>")
+            self.lbl_time.setText(f"🟢 <b>{tf} (Standard)</b>")
             self.lbl_time.setStyleSheet("color: #4caf50;")
         else:
-            self.lbl_time.setText(f"🟠 <b>{tf}</b> (Cần đổi sang 12h)")
+            self.lbl_time.setText(f"🟠 <b>{tf}</b> (Set to 12h)")
             self.lbl_time.setStyleSheet("color: #ff9800;")
 
         # Stay Awake
-        stay = info.get("stay_awake", "Không rõ")
-        if "7" in stay:
+        stay = info.get("stay_awake", "Unknown")
+        if "7" in stay or "15" in stay:
             self.lbl_stay.setText(f"🟢 <b>{stay}</b>")
             self.lbl_stay.setStyleSheet("color: #4caf50;")
         else:
@@ -448,16 +448,16 @@ class HUSettingsDialog(QDialog):
         # 1. Header Bar
         header_layout = QHBoxLayout()
         header_info = QVBoxLayout()
-        lbl_title = QLabel("<b>📱 CẤU HÌNH NHANH HEAD UNIT (AUTO SETTING HU)</b>")
+        lbl_title = QLabel("<b>📱 HEAD UNIT AUTO CONFIGURATION (SETTING HU)</b>")
         lbl_title.setStyleSheet("font-size: 15px; color: #58a6ff;")
         header_info.addWidget(lbl_title)
 
-        self.lbl_subtitle = QLabel("Tự động cấu hình Wi-Fi, Bluetooth, Ngôn ngữ US, Giờ 12h, Stay Awake (Hỗ trợ 1 hoặc 2 devices).")
+        self.lbl_subtitle = QLabel("Automatically configure Wi-Fi, Bluetooth, US Language, 12h Time, Stay Awake (Supports 1 or 2 devices).")
         self.lbl_subtitle.setStyleSheet("color: #888888; font-size: 12px;")
         header_info.addWidget(self.lbl_subtitle)
         header_layout.addLayout(header_info, 1)
 
-        self.btn_refresh = QPushButton("🔄 Quét lại (Refresh)")
+        self.btn_refresh = QPushButton("🔄 Refresh")
         self.btn_refresh.setStyleSheet("background-color: #0288d1; color: white; font-weight: bold;")
         self.btn_refresh.clicked.connect(self._start_query)
         header_layout.addWidget(self.btn_refresh)
@@ -469,14 +469,14 @@ class HUSettingsDialog(QDialog):
         self.cards_layout.setContentsMargins(0, 0, 0, 0)
         self.cards_layout.setSpacing(10)
 
-        self.lbl_no_device = QLabel("Đang kiểm tra kết nối thiết bị qua ADB...")
+        self.lbl_no_device = QLabel("Checking ADB device connections...")
         self.lbl_no_device.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.lbl_no_device.setStyleSheet("color: #ffa726; font-style: italic; padding: 20px;")
         self.cards_layout.addWidget(self.lbl_no_device)
         layout.addWidget(self.cards_container)
 
         # 3. Settings Config Box
-        cfg_box = QGroupBox("Cấu Hình Muốn Áp Dụng (Auto-Settings Scope)")
+        cfg_box = QGroupBox("Auto-Settings Scope")
         cfg_box.setStyleSheet("""
             QGroupBox {
                 font-weight: bold;
@@ -498,7 +498,7 @@ class HUSettingsDialog(QDialog):
 
         # Wi-Fi Selection Row
         wifi_row = QHBoxLayout()
-        wifi_row.addWidget(QLabel("<b>Chọn Mạng Wi-Fi:</b>"))
+        wifi_row.addWidget(QLabel("<b>Select Wi-Fi Network:</b>"))
         self.combo_wifi = QComboBox()
         self.combo_wifi.setMinimumWidth(320)
         
@@ -514,24 +514,24 @@ class HUSettingsDialog(QDialog):
 
         # Features Summary
         features_lbl = QLabel(
-            "<b>Các tính năng sẽ tự động kích hoạt đồng thời:</b><br>"
-            "✔ Kết nối Wi-Fi đã chọn &nbsp;&nbsp;|&nbsp;&nbsp; "
-            "✔ Bật Bluetooth &nbsp;&nbsp;|&nbsp;&nbsp; "
-            "✔ Chuyển ngôn ngữ sang <b>en-US</b> (Zero-Footprint) &nbsp;&nbsp;|&nbsp;&nbsp; "
-            "✔ Định dạng giờ <b>12h</b> &nbsp;&nbsp;|&nbsp;&nbsp; "
-            "✔ Giữ màn hình sáng (Stay Awake)"
+            "<b>Features to be configured simultaneously:</b><br>"
+            "✔ Connect to selected Wi-Fi &nbsp;&nbsp;|&nbsp;&nbsp; "
+            "✔ Enable Bluetooth &nbsp;&nbsp;|&nbsp;&nbsp; "
+            "✔ Set language to <b>en-US</b> (Zero-Footprint) &nbsp;&nbsp;|&nbsp;&nbsp; "
+            "✔ Set time format to <b>12h</b> &nbsp;&nbsp;|&nbsp;&nbsp; "
+            "✔ Keep screen on (Stay Awake)"
         )
         features_lbl.setStyleSheet("color: #a5d6a7; font-size: 11px; padding: 4px 0;")
         cfg_layout.addWidget(features_lbl)
 
         # Action Buttons Row
         act_row = QHBoxLayout()
-        self.btn_apply = QPushButton("▶ BẮT ĐẦU CÀI ĐẶT (Apply Settings)")
+        self.btn_apply = QPushButton("▶ Apply Settings")
         self.btn_apply.setStyleSheet("background-color: #2e7d32; color: white; font-weight: bold; font-size: 13px; padding: 8px 18px;")
         self.btn_apply.clicked.connect(self._start_apply)
         act_row.addWidget(self.btn_apply)
 
-        self.btn_close = QPushButton("Đóng")
+        self.btn_close = QPushButton("Close")
         self.btn_close.clicked.connect(self.close)
         act_row.addWidget(self.btn_close)
         act_row.addStretch(1)
@@ -546,7 +546,7 @@ class HUSettingsDialog(QDialog):
         layout.addWidget(self.progress_bar)
 
         # 5. Live Log Console
-        log_box = QGroupBox("Nhật Ký Thực Thi (Execution Log)")
+        log_box = QGroupBox("Execution Log")
         log_box.setStyleSheet("""
             QGroupBox {
                 border: 1px solid #333333;

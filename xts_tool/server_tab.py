@@ -65,7 +65,7 @@ class ServerTab(QWidget):
         # -------------------------------------------------------------
         # 1. Top Panel: SSH & Device Info
         # -------------------------------------------------------------
-        top_group = QGroupBox("Kết nối SSH & Trạng thái Thiết bị (1 Device Only)")
+        top_group = QGroupBox("SSH Connection & Device Status")
         top_layout = QGridLayout(top_group)
         top_layout.setContentsMargins(8, 8, 8, 8)
         top_layout.setHorizontalSpacing(10)
@@ -79,7 +79,7 @@ class ServerTab(QWidget):
         # SSH Fields
         top_layout.addWidget(QLabel("Host/IP:"), 0, 0)
         self.txt_host = QLineEdit(default_host)
-        self.txt_host.setPlaceholderText("IP Ubuntu Server")
+        self.txt_host.setPlaceholderText("Ubuntu Server IP")
         top_layout.addWidget(self.txt_host, 0, 1)
 
         top_layout.addWidget(QLabel("Port:"), 0, 2)
@@ -96,26 +96,25 @@ class ServerTab(QWidget):
         self.txt_pass = QLineEdit(default_pass)
         self.txt_pass.setEchoMode(QLineEdit.EchoMode.Password)
         self.txt_pass.setPlaceholderText("Pass")
-        self.txt_pass.setFixedWidth(100)
         top_layout.addWidget(self.txt_pass, 0, 7)
 
-        self.btn_connect = QPushButton("🔌 Kết nối SSH")
+        self.btn_connect = QPushButton("🔌 Connect SSH")
         self.btn_connect.setStyleSheet("font-weight: bold; background-color: #1976d2; color: white;")
         self.btn_connect.clicked.connect(self._toggle_ssh)
         top_layout.addWidget(self.btn_connect, 0, 8)
 
         # Status indicator
-        self.lbl_ssh_status = QLabel("⚪ Chưa kết nối")
+        self.lbl_ssh_status = QLabel("⚪ Disconnected")
         self.lbl_ssh_status.setStyleSheet("font-weight: bold; color: #9e9e9e;")
         top_layout.addWidget(self.lbl_ssh_status, 0, 9)
 
         # Device check row
-        self.btn_check_device = QPushButton("📱 Kiểm tra Device (Pre-Setup)")
+        self.btn_check_device = QPushButton("📱 Check Device")
         self.btn_check_device.setEnabled(False)
         self.btn_check_device.clicked.connect(self._check_device_clicked)
         top_layout.addWidget(self.btn_check_device, 1, 0, 1, 2)
 
-        self.lbl_device_status = QLabel("⚪ Thiết bị (Chỉ cần khi Pre-Setup): Chưa kiểm tra")
+        self.lbl_device_status = QLabel("⚪ Device: Not Checked")
         self.lbl_device_status.setStyleSheet("font-weight: bold; color: #9e9e9e;")
         top_layout.addWidget(self.lbl_device_status, 1, 2, 1, 8)
 
@@ -144,18 +143,18 @@ class ServerTab(QWidget):
         presetup_layout.setSpacing(6)
 
         # Config & Suite Selection
-        cfg_group = QGroupBox("Cấu hình Bài Test & Đường Dẫn Firmware")
+        cfg_group = QGroupBox("Test Suite & Firmware Configuration")
         cfg_layout = QHBoxLayout(cfg_group)
         cfg_layout.setContentsMargins(8, 8, 8, 8)
 
-        cfg_layout.addWidget(QLabel("<b>Chọn bài test:</b>"))
+        cfg_layout.addWidget(QLabel("<b>Select Test Suite:</b>"))
         self.combo_suite = QComboBox()
         self.combo_suite.addItems(["CTS", "CTS on GSI", "ATS", "STS", "VTS"])
         self.combo_suite.currentTextChanged.connect(self._on_suite_changed)
         self.combo_suite.setFixedWidth(130)
         cfg_layout.addWidget(self.combo_suite)
 
-        self.btn_confirm_paths = QPushButton("📂 Xác nhận Đường Dẫn Firmware & Scripts...")
+        self.btn_confirm_paths = QPushButton("📂 Confirm Paths & Scripts...")
         self.btn_confirm_paths.clicked.connect(self._open_confirm_paths_dialog)
         cfg_layout.addWidget(self.btn_confirm_paths)
 
@@ -164,7 +163,7 @@ class ServerTab(QWidget):
         self.btn_setting_hu.clicked.connect(self._open_setting_hu_dialog)
         cfg_layout.addWidget(self.btn_setting_hu)
 
-        self.lbl_paths_summary = QLabel("Paths: Chưa quét thư mục")
+        self.lbl_paths_summary = QLabel("Paths: Not Scanned")
         self.lbl_paths_summary.setStyleSheet("color: #ffa726; font-style: italic;")
         cfg_layout.addWidget(self.lbl_paths_summary, 1)
 
@@ -172,13 +171,13 @@ class ServerTab(QWidget):
 
         # Controls & Progress
         ctrl_layout = QHBoxLayout()
-        self.btn_run_all = QPushButton("▶ BẮT ĐẦU CHẠY TOÀN BỘ (Run All)")
+        self.btn_run_all = QPushButton("▶ Run All")
         self.btn_run_all.setEnabled(False)
         self.btn_run_all.setStyleSheet("background-color: #2e7d32; color: white; font-weight: bold; font-size: 13px; padding: 6px 14px;")
         self.btn_run_all.clicked.connect(self._run_all_steps)
         ctrl_layout.addWidget(self.btn_run_all)
 
-        self.btn_abort = QPushButton("⏹ DỪNG LẠI (Stop)")
+        self.btn_abort = QPushButton("⏹ Stop")
         self.btn_abort.setEnabled(False)
         self.btn_abort.setStyleSheet("background-color: #c62828; color: white; font-weight: bold; font-size: 13px; padding: 6px 14px;")
         self.btn_abort.clicked.connect(self._abort_execution)
@@ -198,7 +197,7 @@ class ServerTab(QWidget):
         # Steps Table
         self.table_steps = QTableWidget()
         self.table_steps.setColumnCount(4)
-        self.table_steps.setHorizontalHeaderLabels(["Bước", "Mô tả / Lệnh", "Trạng thái", "Thao tác"])
+        self.table_steps.setHorizontalHeaderLabels(["Step", "Description / Command", "Status", "Action"])
         self.table_steps.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         self.table_steps.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self.table_steps.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
@@ -207,7 +206,7 @@ class ServerTab(QWidget):
         self.table_steps.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         presetup_layout.addWidget(self.table_steps)
 
-        self.work_tabs.addTab(presetup_widget, "⚙️ Quy Trình Pre-Setup (xTS Flash & Setup)")
+        self.work_tabs.addTab(presetup_widget, "⚙️ Pre-Setup Workflow")
 
         # -------------------------------------------------------------
         # Sub-Tab 2: Collect & Organize Report
@@ -218,22 +217,22 @@ class ServerTab(QWidget):
         report_layout.setSpacing(6)
 
         # Test Root Path selector
-        troot_group = QGroupBox("Đường Dẫn Test Root & Thao Tác Collect Report")
+        troot_group = QGroupBox("Test Root Path & Collect Report Actions")
         troot_layout = QVBoxLayout(troot_group)
         troot_layout.setContentsMargins(8, 8, 8, 8)
         troot_layout.setSpacing(6)
 
-        lbl_note = QLabel("ℹ️ <i>Tính năng Collect Report hoạt động hoàn toàn qua SSH trên máy chủ, <b>không yêu cầu cắm thiết bị (Device)</b>.</i>")
+        lbl_note = QLabel("ℹ️ <i>Collect Report operates over SSH and does not require a connected device.</i>")
         lbl_note.setStyleSheet("color: #64b5f6; font-size: 11px;")
         troot_layout.addWidget(lbl_note)
 
         path_row = QHBoxLayout()
         path_row.addWidget(QLabel("<b>Test Root Path:</b>"))
         self.txt_test_root = QLineEdit("/home/lge/GoogleQA/TestFolder/GSI_cf8886c9,d930bf76/android-cts")
-        self.txt_test_root.setPlaceholderText("VD: /home/lge/GoogleQA/TestFolder/GSI_.../android-cts")
+        self.txt_test_root.setPlaceholderText("e.g. /home/lge/GoogleQA/TestFolder/GSI_.../android-cts")
         path_row.addWidget(self.txt_test_root, 1)
 
-        self.btn_detect_test_root = QPushButton("🔍 Dò Tìm TestFolder")
+        self.btn_detect_test_root = QPushButton("🔍 Detect TestFolder")
         self.btn_detect_test_root.setEnabled(False)
         self.btn_detect_test_root.clicked.connect(self._detect_test_roots_clicked)
         path_row.addWidget(self.btn_detect_test_root)
@@ -242,7 +241,7 @@ class ServerTab(QWidget):
 
         # Action Buttons
         btn_action_row = QHBoxLayout()
-        self.btn_scan_preview = QPushButton("🔎 Quét & Phân Tích Kết Quả (Scan Preview)")
+        self.btn_scan_preview = QPushButton("🔎 Scan Preview")
         self.btn_scan_preview.setEnabled(False)
         self.btn_scan_preview.setStyleSheet("background-color: #0288d1; color: white; font-weight: bold; padding: 6px 12px;")
         self.btn_scan_preview.clicked.connect(self._scan_report_preview_clicked)
@@ -256,7 +255,7 @@ class ServerTab(QWidget):
 
         btn_action_row.addStretch()
 
-        self.lbl_report_stats = QLabel("Trạng thái: Chưa quét dữ liệu")
+        self.lbl_report_stats = QLabel("Status: Not Scanned")
         self.lbl_report_stats.setStyleSheet("font-weight: bold; color: #ffa726;")
         btn_action_row.addWidget(self.lbl_report_stats)
 
@@ -267,8 +266,8 @@ class ServerTab(QWidget):
         self.table_report_preview = QTableWidget()
         self.table_report_preview.setColumnCount(7)
         self.table_report_preview.setHorizontalHeaderLabels([
-            "Session Timestamp", "Loại", "Tên Module", "Pass / Fail", 
-            "Đánh Giá", "Folder Đích trong Report", "Trạng Thái Copy"
+            "Session Timestamp", "Type", "Module Name", "Pass / Fail", 
+            "Assessment", "Destination Folder", "Copy Status"
         ])
         self.table_report_preview.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         self.table_report_preview.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
@@ -301,14 +300,14 @@ class ServerTab(QWidget):
         log_layout.setSpacing(4)
 
         log_bar = QHBoxLayout()
-        log_bar.addWidget(QLabel("<b>Log Đầu Ra Thực Thi (Thời Gian Thực):</b>"))
+        log_bar.addWidget(QLabel("<b>Real-Time Execution Log:</b>"))
         log_bar.addStretch()
 
-        self.btn_clear_log = QPushButton("Xóa Log")
+        self.btn_clear_log = QPushButton("Clear Log")
         self.btn_clear_log.clicked.connect(self._clear_log)
         log_bar.addWidget(self.btn_clear_log)
 
-        self.btn_save_log = QPushButton("💾 Lưu File Log...")
+        self.btn_save_log = QPushButton("💾 Save Log...")
         self.btn_save_log.clicked.connect(self._save_log)
         log_bar.addWidget(self.btn_save_log)
 
@@ -362,9 +361,9 @@ class ServerTab(QWidget):
 
         if ok:
             self._append_log(msg, "SUCCESS")
-            self.lbl_ssh_status.setText("🟢 Đã kết nối")
+            self.lbl_ssh_status.setText("🟢 Connected")
             self.lbl_ssh_status.setStyleSheet("font-weight: bold; color: #4caf50;")
-            self.btn_connect.setText("Ngắt kết nối SSH")
+            self.btn_connect.setText("Disconnect SSH")
             self.btn_connect.setStyleSheet("background-color: #d32f2f; color: white;")
             self.btn_check_device.setEnabled(True)
             self.btn_run_all.setEnabled(True)
@@ -379,11 +378,11 @@ class ServerTab(QWidget):
             self._auto_detect_test_root()
         else:
             self._append_log(msg, "ERROR")
-            self.lbl_ssh_status.setText("🔴 Kết nối thất bại")
+            self.lbl_ssh_status.setText("🔴 Connection Failed")
             self.lbl_ssh_status.setStyleSheet("font-weight: bold; color: #f44336;")
-            self.btn_connect.setText("🔌 Kết nối SSH")
+            self.btn_connect.setText("🔌 Connect SSH")
             self.btn_connect.setStyleSheet("font-weight: bold; background-color: #1976d2; color: white;")
-            QMessageBox.critical(self, "Lỗi kết nối", msg)
+            QMessageBox.critical(self, "Connection Error", msg)
 
     def _disconnect_ssh(self):
         if self.worker and self.worker.isRunning():
@@ -398,11 +397,11 @@ class ServerTab(QWidget):
 
         self.ssh.disconnect()
         self._append_log("Đã ngắt kết nối SSH.", "WARN")
-        self.lbl_ssh_status.setText("⚪ Chưa kết nối")
+        self.lbl_ssh_status.setText("⚪ Disconnected")
         self.lbl_ssh_status.setStyleSheet("font-weight: bold; color: #9e9e9e;")
-        self.lbl_device_status.setText("⚪ Thiết bị: Chưa kiểm tra")
+        self.lbl_device_status.setText("⚪ Device: Not Checked")
         self.lbl_device_status.setStyleSheet("font-weight: bold; color: #9e9e9e;")
-        self.btn_connect.setText("🔌 Kết nối SSH")
+        self.btn_connect.setText("🔌 Connect SSH")
         self.btn_connect.setStyleSheet("font-weight: bold; background-color: #1976d2; color: white;")
         self.btn_check_device.setEnabled(False)
         self.btn_run_all.setEnabled(False)
@@ -530,12 +529,12 @@ class ServerTab(QWidget):
             item_desc.setFlags(item_desc.flags() & ~Qt.ItemFlag.ItemIsEditable)
             self.table_steps.setItem(row, 1, item_desc)
 
-            item_status = QTableWidgetItem("⚪ Sẵn sàng")
+            item_status = QTableWidgetItem("⚪ Ready")
             item_status.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             item_status.setFlags(item_status.flags() & ~Qt.ItemFlag.ItemIsEditable)
             self.table_steps.setItem(row, 2, item_status)
 
-            btn_run_step = QPushButton("▶ Chạy bước này")
+            btn_run_step = QPushButton("▶ Run")
             btn_run_step.setStyleSheet("padding: 2px 8px;")
             btn_run_step.clicked.connect(lambda checked, r=row: self._run_single_step(r))
             self.table_steps.setCellWidget(row, 3, btn_run_step)
@@ -622,13 +621,13 @@ class ServerTab(QWidget):
             self.report_worker.request_abort()
 
     def _on_worker_step_started(self, step_idx: int, step_title: str):
-        self._set_step_status(step_idx, "⏳ Đang chạy...", "#ffb300")
+        self._set_step_status(step_idx, "⏳ Running...", "#ffb300")
 
     def _on_worker_step_finished(self, step_idx: int, step_title: str, success: bool):
         if success:
-            self._set_step_status(step_idx, "🟢 Thành công", "#4caf50")
+            self._set_step_status(step_idx, "🟢 Success", "#4caf50")
         else:
-            self._set_step_status(step_idx, "🔴 Thất bại", "#f44336")
+            self._set_step_status(step_idx, "🔴 Failed", "#f44336")
 
     def _on_worker_progress(self, current: int, total: int):
         percent = int((current / total) * 100) if total > 0 else 0

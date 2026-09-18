@@ -153,9 +153,9 @@ class MainWindow(QMainWindow):
         try:
             with open(self.config_path, "w", encoding="utf-8") as f:
                 json.dump(self.config, f, indent=2, ensure_ascii=False)
-            QMessageBox.information(self, "Lưu cấu hình", "Đã lưu cấu hình thành công vào config.json!")
+            QMessageBox.information(self, "Save Config", "Configuration saved successfully to config.json!")
         except Exception as e:
-            QMessageBox.critical(self, "Lỗi", f"Không thể lưu config: {e}")
+            QMessageBox.critical(self, "Error", f"Failed to save config: {e}")
 
     def _init_ui(self):
         # Toolbar
@@ -163,22 +163,16 @@ class MainWindow(QMainWindow):
         toolbar.setMovable(False)
         self.addToolBar(toolbar)
 
-        btn_add_tab = QPushButton("➕ Thêm Cửa Sổ Server Mới")
+        btn_add_tab = QPushButton("➕ Add Server Tab")
         btn_add_tab.setStyleSheet("background-color: #1565c0; color: white; font-weight: bold;")
         btn_add_tab.clicked.connect(lambda: self.add_server_tab())
         toolbar.addWidget(btn_add_tab)
 
         toolbar.addSeparator()
 
-        btn_save_cfg = QPushButton("💾 Lưu Cấu Hình")
+        btn_save_cfg = QPushButton("💾 Save Config")
         btn_save_cfg.clicked.connect(self._save_config)
         toolbar.addWidget(btn_save_cfg)
-
-        toolbar.addSeparator()
-
-        lbl_info = QLabel("  |  Mỗi tab là 1 Linux Server - Đảm bảo kết nối DUY NHẤT 1 device per Server")
-        lbl_info.setStyleSheet("color: #81c784; font-weight: bold;")
-        toolbar.addWidget(lbl_info)
 
         # Tab Widget
         self.tab_widget = QTabWidget()

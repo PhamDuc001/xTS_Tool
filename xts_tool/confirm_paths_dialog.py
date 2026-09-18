@@ -16,7 +16,7 @@ class ConfirmPathsDialog(QDialog):
     """
     def __init__(self, parent, paths: dict, ssh_mgr=None):
         super().__init__(parent)
-        self.setWindowTitle("Xác thực đường dẫn Firmware & Scripts trên Server")
+        self.setWindowTitle("Confirm Firmware & Script Paths on Server")
         self.resize(750, 560)
         self.paths = paths.copy()
         self.ssh = ssh_mgr
@@ -25,14 +25,14 @@ class ConfirmPathsDialog(QDialog):
 
         # Header Info
         header = QLabel(
-            "<b>Vui lòng kiểm tra các đường dẫn trước khi thực hiện Pre-setup:</b><br>"
-            "<small style='color: #888;'>Các đường dẫn User / Userdebug được tự động nhận diện từ thư mục Binary gốc trên server. "
-            "Bạn có thể chỉnh sửa trực tiếp nếu cần.</small>"
+            "<b>Please verify paths before executing Pre-Setup:</b><br>"
+            "<small style='color: #888;'>User / Userdebug paths are automatically detected from the root Binary directory on server. "
+            "You can modify them directly if needed.</small>"
         )
         header.setWordWrap(True)
         layout.addWidget(header)
 
-        form_box = QGroupBox("Cấu hình đường dẫn trên Linux Server")
+        form_box = QGroupBox("Linux Server Paths Configuration")
         form_layout = QFormLayout(form_box)
         form_layout.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
 
@@ -57,7 +57,7 @@ class ConfirmPathsDialog(QDialog):
         form_layout.addRow("Google Key Folder:", self.txt_gkey_path)
         form_layout.addRow("Google Key Script:", self.txt_gkey_script)
         form_layout.addRow("MTC Folder:", self.txt_mtc_path)
-        form_layout.addRow("MTC Scripts (phẩy):", self.txt_mtc_scripts)
+        form_layout.addRow("MTC Scripts (comma):", self.txt_mtc_scripts)
         form_layout.addRow("Calibration Folder:", self.txt_calib_path)
         form_layout.addRow("Calibration Script:", self.txt_calib_script)
         form_layout.addRow("GSI Image Folder:", self.txt_gsi_path)
@@ -67,17 +67,17 @@ class ConfirmPathsDialog(QDialog):
         # Action Buttons
         btn_layout = QHBoxLayout()
         
-        self.btn_redetect = QPushButton("🔍 Quét lại tự động từ Server")
+        self.btn_redetect = QPushButton("🔍 Auto Detect from Server")
         self.btn_redetect.clicked.connect(self._re_detect)
         btn_layout.addWidget(self.btn_redetect)
 
         btn_layout.addStretch()
 
-        self.btn_cancel = QPushButton("Hủy bỏ")
+        self.btn_cancel = QPushButton("Cancel")
         self.btn_cancel.clicked.connect(self.reject)
         btn_layout.addWidget(self.btn_cancel)
 
-        self.btn_confirm = QPushButton("✔ Xác nhận đường dẫn & Tiến hành")
+        self.btn_confirm = QPushButton("✔ Confirm Paths & Proceed")
         self.btn_confirm.setStyleSheet("background-color: #2e7d32; color: white; font-weight: bold; padding: 6px 15px;")
         self.btn_confirm.clicked.connect(self._confirm)
         btn_layout.addWidget(self.btn_confirm)
