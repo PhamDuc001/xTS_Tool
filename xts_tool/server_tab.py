@@ -767,13 +767,25 @@ class ServerTab(QWidget):
             self.table_report_preview.setItem(row, 0, it_ts)
 
             # 1: Type
-            it_type = QTableWidgetItem(s["type"].upper())
+            type_str = s["type"].upper()
+            it_type = QTableWidgetItem(type_str)
             it_type.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            if type_str == "TESTCASE":
+                it_type.setForeground(QColor("#00bcd4"))
+            elif type_str == "MULTIPLE":
+                it_type.setForeground(QColor("#ab47bc"))
+            else:
+                it_type.setForeground(QColor("#42a5f5"))
             it_type.setFlags(it_type.flags() & ~Qt.ItemFlag.ItemIsEditable)
             self.table_report_preview.setItem(row, 1, it_type)
 
             # 2: Module Name
-            it_mod = QTableWidgetItem(s["module_name"])
+            tc_name = s.get("testcase_name", "")
+            if tc_name:
+                mod_display = f"{s['module_name']} ➔ {tc_name}"
+            else:
+                mod_display = s["module_name"]
+            it_mod = QTableWidgetItem(mod_display)
             it_mod.setFlags(it_mod.flags() & ~Qt.ItemFlag.ItemIsEditable)
             self.table_report_preview.setItem(row, 2, it_mod)
 
@@ -789,6 +801,9 @@ class ServerTab(QWidget):
             if tag == "LATEST_PASS":
                 it_eval = QTableWidgetItem("🟢 Latest Pass")
                 it_eval.setForeground(QColor("#4caf50"))
+            elif tag == "TESTCASE_PASS":
+                it_eval = QTableWidgetItem("🟢 Testcase Pass")
+                it_eval.setForeground(QColor("#26a69a"))
             elif tag == "OUTDATED_PASS":
                 it_eval = QTableWidgetItem("🟡 Outdated Pass")
                 it_eval.setForeground(QColor("#ffb300"))
@@ -818,6 +833,12 @@ class ServerTab(QWidget):
             elif c_status == "MISSING_RES":
                 it_copied = QTableWidgetItem("🟡 Thiếu Result (Sẽ bổ sung)")
                 it_copied.setForeground(QColor("#ffa726"))
+            elif c_status == "WILL_COPY":
+                it_copied = QTableWidgetItem("⚪ Sẽ copy")
+                it_copied.setForeground(QColor("#29b6f6"))
+            elif c_status == "PRUNED_SKIP":
+                it_copied = QTableWidgetItem("⚪ Bỏ qua (Lịch sử)")
+                it_copied.setForeground(QColor("#757575"))
             else:
                 it_copied = QTableWidgetItem("⚪ Chưa copy")
                 it_copied.setForeground(QColor("#9e9e9e"))
@@ -826,7 +847,7 @@ class ServerTab(QWidget):
             it_copied.setFlags(it_copied.flags() & ~Qt.ItemFlag.ItemIsEditable)
             self.table_report_preview.setItem(row, 6, it_copied)
 
-        self.btn_organize_report.setEnabled(latest_cnt > 0)
+        self.btn_organize_report.setEnabled(latest_cnt > 0 or passed > 0)
         self._append_log(f"Quét hoàn tất: {total} sessions, {passed} pass, {latest_cnt} latest modules.", "SUCCESS")
 
     def _organize_report_clicked(self):

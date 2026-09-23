@@ -41,111 +41,181 @@ class ReportOrganizeWorker(QThread):
 
 REMOTE_SCAN_SCRIPT = r"""
 import os, glob, re, json, sys
+from collections import defaultdict
 
-def extract_modules_info_from_html(content, tot_mods):
-    idx = content.find("testsummary")
-    raw_modules = []
-    if idx != -1:
-        end_idx = content.find("</table>", idx)
-        table_html = content[idx:end_idx] if end_idx != -1 else content[idx:idx+50000]
-        rows = re.findall(r"<tr>(.*?)</tr>", table_html, re.DOTALL)
-        for row in rows[1:]:
-            m_td = re.search(r"<td[^>]*>(.*?)</td>", row, re.DOTALL)
-            if not m_td:
-                continue
-            clean_text = re.sub(r"<[^>]+>", "", m_td.group(1))
-            clean_text = clean_text.replace("&nbsp;", " ").replace("\xa0", " ").strip()
-            parts = clean_text.split()
-            if len(parts) >= 2 and any(arch in parts[0].lower() for arch in ["arm", "x86", "mips", "riscv"]):
-                raw_modules.append(parts[1])
-            elif len(parts) >= 1:
-                raw_modules.append(parts[0])
+def sanitize_name(name):
+    return re.sub(r'[\s\[\]#:$]+', '_', name).strip('_')
 
-    if not raw_modules:
-        for m_mod in re.finditer(r"<td class=[\"']module[\"'][^>]*>(.*?)</td>", content, re.DOTALL):
-            clean_text = re.sub(r"<[^>]+>", "", m_mod.group(1))
-            clean_text = clean_text.replace("&nbsp;", " ").replace("\xa0", " ").strip()
-            parts = clean_text.split()
-            if len(parts) >= 2 and any(arch in parts[0].lower() for arch in ["arm", "x86", "mips", "riscv"]):
-                raw_modules.append(parts[1])
-            elif len(parts) >= 1:
-                raw_modules.append(parts[0])
+def find_effective_report_dir(test_root):
+    r_dir = os.path.join(test_root, "Report")
+    if not os.path.exists(r_dir):
+        return r_dir
+    for item in os.listdir(r_dir):
+        p = os.path.join(r_dir, item)
+        if os.path.isdir(p) and re.match(r"^\d+\.", item):
+            if os.path.exists(os.path.join(p, "single")) or os.path.exists(os.path.join(p, "results")):
+                return p
+    return r_dir
 
-    # Strip [instant] or bracketed parameters to determine unique base module names
-    base_names = []
-    for m in raw_modules:
-        base = re.sub(r"\[.*?\]", "", m).strip()
-        if base and base not in base_names:
-            base_names.append(base)
-
-    if len(base_names) == 1:
-        return "single", base_names[0]
-    elif len(base_names) > 1:
-        return "multiple", "Multiple"
-    else:
-        if tot_mods == 1:
-            return "single", "Unknown"
-        else:
-            return "multiple", "Multiple"
-
-def parse_html_session(dir_path):
+def parse_session(dir_path):
+    xml_path = os.path.join(dir_path, "test_result.xml")
     html_path = os.path.join(dir_path, "test_result_failures_suite.html")
-    if not os.path.exists(html_path):
-        return None
-    try:
-        with open(html_path, "r", errors="ignore") as f:
-            content = f.read(60000)
-            
-        m_pass = re.search(r"Tests Passed</td><td>(\d+)</td>", content)
-        m_fail = re.search(r"Tests Failed</td><td>(\d+)</td>", content)
-        m_tot = re.search(r"Modules Total</td><td>(\d+)</td>", content)
-        m_done = re.search(r"Modules Done</td><td>(\d+)</td>", content)
-        
-        pass_cnt = int(m_pass.group(1)) if m_pass else 0
-        fail_cnt = int(m_fail.group(1)) if m_fail else -1
-        tot_mods = int(m_tot.group(1)) if m_tot else 0
-        done_mods = int(m_done.group(1)) if m_done else 0
-        
-        sess_type, mod_name = extract_modules_info_from_html(content, tot_mods)
-            
-        return {
-            "pass": pass_cnt,
-            "fail": fail_cnt,
-            "total_modules": tot_mods,
-            "done_modules": done_mods,
-            "module_name": mod_name,
-            "is_pass": (fail_cnt == 0 and tot_mods > 0 and done_mods == tot_mods),
-            "type": sess_type
-        }
-    except Exception as e:
-        return None
-
-
-
-def match_folder_for_module(folders, mod_name, is_multi=False):
-    if is_multi:
-        for f in folders:
-            if "multiple" in f.lower():
-                return f
-        return None
     
-    # Exact match after removing prefix like '01.'
+    cmd_args = ""
+    mod_name = ""
+    test_method = ""
+    total_tests = 0
+    pass_cnt = 0
+    fail_cnt = -1
+    tot_mods = 0
+    done_mods = 0
+    failed_tests = []
+    
+    if os.path.exists(xml_path):
+        try:
+            with open(xml_path, "r", errors="ignore") as f:
+                header = f.read(35000)
+            m_cmd = re.search(r'command_line_args="([^"]*)"', header)
+            if m_cmd:
+                cmd_args = m_cmd.group(1)
+            m_sum = re.search(r'<Summary\s+pass="(\d+)"\s+failed="(\d+)"[^>]*modules_done="(\d+)"\s+modules_total="(\d+)"', header)
+            if m_sum:
+                pass_cnt = int(m_sum.group(1))
+                fail_cnt = int(m_sum.group(2))
+                done_mods = int(m_sum.group(3))
+                tot_mods = int(m_sum.group(4))
+            m_mod = re.search(r'<Module\s+name="([^"]+)"[^>]*total_tests="(\d+)"', header)
+            if m_mod:
+                mod_name = m_mod.group(1)
+                total_tests = int(m_mod.group(2))
+            
+            for tm in re.finditer(r'<Test\s+result="([^"]*)"\s+name="([^"]+)"', header):
+                res_type, t_name = tm.group(1), tm.group(2)
+                if not test_method:
+                    test_method = t_name
+                if res_type == "fail":
+                    failed_tests.append(t_name)
+        except Exception:
+            pass
+
+    if not mod_name and os.path.exists(html_path):
+        try:
+            with open(html_path, "r", errors="ignore") as f:
+                content = f.read(60000)
+            m_pass = re.search(r"Tests Passed</td><td>(\d+)</td>", content)
+            m_fail = re.search(r"Tests Failed</td><td>(\d+)</td>", content)
+            m_tot = re.search(r"Modules Total</td><td>(\d+)</td>", content)
+            m_done = re.search(r"Modules Done</td><td>(\d+)</td>", content)
+            if m_pass: pass_cnt = int(m_pass.group(1))
+            if m_fail: fail_cnt = int(m_fail.group(1))
+            if m_tot: tot_mods = int(m_tot.group(1))
+            if m_done: done_mods = int(m_done.group(1))
+            
+            idx = content.find("testsummary")
+            if idx != -1:
+                end_idx = content.find("</table>", idx)
+                t_html = content[idx:end_idx] if end_idx != -1 else content[idx:idx+50000]
+                rows = re.findall(r"<tr>(.*?)</tr>", t_html, re.DOTALL)
+                for row in rows[1:]:
+                    m_td = re.search(r"<td[^>]*>(.*?)</td>", row, re.DOTALL)
+                    if m_td:
+                        clean = re.sub(r"<[^>]+>", "", m_td.group(1)).replace("&nbsp;", " ").strip()
+                        parts = clean.split()
+                        if len(parts) >= 2 and any(a in parts[0].lower() for a in ["arm", "x86", "mips", "riscv"]):
+                            mod_name = parts[1]
+                        elif len(parts) >= 1:
+                            mod_name = parts[0]
+                        break
+        except Exception:
+            pass
+
+    is_testcase = False
+    if (" -t " in cmd_args or "#" in cmd_args) and test_method:
+        is_testcase = True
+    elif tot_mods == 1 and total_tests == 1 and test_method:
+        if "#" in cmd_args or " -t " in cmd_args or "filter" in cmd_args:
+            is_testcase = True
+
+    if is_testcase:
+        sess_type = "testcase"
+    elif tot_mods > 1 or "Multiple" in cmd_args or mod_name.lower() == "multiple":
+        sess_type = "multiple"
+        mod_name = "Multiple"
+    else:
+        sess_type = "single"
+
+    is_pass = (fail_cnt == 0 and tot_mods > 0 and done_mods == tot_mods and pass_cnt > 0)
+
+    return {
+        "pass": pass_cnt,
+        "fail": fail_cnt,
+        "total_modules": tot_mods,
+        "done_modules": done_mods,
+        "module_name": mod_name or "Unknown",
+        "testcase_name": test_method if is_testcase else "",
+        "failed_tests": failed_tests,
+        "is_pass": is_pass,
+        "type": sess_type,
+        "cmd": cmd_args
+    }
+
+def select_history_sessions(sessions):
+    if len(sessions) < 5:
+        return sessions
+    return [sessions[0], sessions[1], sessions[-2], sessions[-1]]
+
+def get_max_existing_id(report_dir):
+    single_dir = os.path.join(report_dir, "single")
+    folders = []
+    if os.path.exists(report_dir):
+        folders.extend(os.listdir(report_dir))
+    if os.path.exists(single_dir):
+        folders.extend(os.listdir(single_dir))
+    max_id = 0
     for f in folders:
+        m = re.match(r"^(\d+)\.", f)
+        if m:
+            val = int(m.group(1))
+            if val > max_id:
+                max_id = val
+    return max_id
+
+def match_module_folder(all_known_folders, mod_name):
+    for f in all_known_folders:
         clean = re.sub(r"^\d+\.\s*", "", f).strip()
         if clean.lower() == mod_name.lower():
             return f
-            
-    # Fallback substring match
-    for f in folders:
+    mod_base = re.sub(r'(Device)?TestCases$', '', mod_name, flags=re.I).lower()
+    for f in all_known_folders:
+        clean = re.sub(r"^\d+\.\s*", "", f).strip()
+        clean_base = re.sub(r'((Device)?TestCases)?(_multi)?$', '', clean, flags=re.I).lower()
+        if clean_base == mod_base:
+            return f
+    for f in all_known_folders:
         if mod_name.lower() in f.lower():
             return f
     return None
 
+def match_testcase_folder(all_known_folders, mod_name, tc_name):
+    mod_base = re.sub(r'(Device)?TestCases$', '', mod_name, flags=re.I).lower()
+    tc_clean = tc_name.lower()
+    for f in all_known_folders:
+        f_lower = f.lower()
+        if mod_base in f_lower:
+            if tc_clean in f_lower:
+                return f
+            tc_stem = re.sub(r'ifsupported|test', '', tc_clean)
+            if tc_stem and tc_stem in f_lower:
+                return f
+            if any(part in f_lower for part in tc_clean.split('_') if len(part) > 6):
+                return f
+    return None
 
 def scan_and_analyze(test_root):
     results_dir = os.path.join(test_root, "results")
     logs_dir = os.path.join(test_root, "logs")
-    report_dir = os.path.join(test_root, "Report")
+    report_dir = find_effective_report_dir(test_root)
+    single_dir = os.path.join(report_dir, "single")
     
     if not os.path.exists(results_dir):
         return {"error": f"results directory not found at {results_dir}"}
@@ -156,94 +226,156 @@ def scan_and_analyze(test_root):
             dir_path = os.path.join(results_dir, item)
             if not os.path.isdir(dir_path) or item == "latest":
                 continue
-            parsed = parse_html_session(dir_path)
+            parsed = parse_session(dir_path)
             if parsed:
                 parsed["timestamp"] = item
                 parsed["has_zip"] = os.path.exists(os.path.join(results_dir, item + ".zip"))
                 parsed["has_log"] = os.path.exists(os.path.join(logs_dir, item))
                 sessions.append(parsed)
 
-    # Find latest pass
+    multi_sessions = [s for s in sessions if s["type"] == "multiple"]
+    single_sessions = defaultdict(list)
+    tc_sessions = defaultdict(list)
+
+    failed_in_multiple = set()
+    for s in multi_sessions:
+        xml_p = os.path.join(results_dir, s["timestamp"], "test_result.xml")
+        if os.path.exists(xml_p):
+            try:
+                with open(xml_p, "r", errors="ignore") as f:
+                    for line in f:
+                        if "<Module " in line:
+                            m_m = re.search(r'name="([^"]+)"[^>]*done="([^"]+)"', line)
+                            if m_m and m_m.group(2).lower() != "true":
+                                failed_in_multiple.add(m_m.group(1))
+                            m_f = re.search(r'name="([^"]+)"[^>]*failed="([1-9]\d*)"', line)
+                            if m_f:
+                                failed_in_multiple.add(m_f.group(1))
+            except Exception:
+                pass
+
+    for s in sessions:
+        if s["type"] == "single":
+            single_sessions[s["module_name"]].append(s)
+        elif s["type"] == "testcase":
+            tc_sessions[(s["module_name"], s["testcase_name"])].append(s)
+
+    all_known_folders = {}
+    if os.path.exists(report_dir):
+        for f in os.listdir(report_dir):
+            p = os.path.join(report_dir, f)
+            if os.path.isdir(p) and f not in ["single", "results", "logs"]:
+                all_known_folders[f] = {"loc": "root", "path": p}
+    if os.path.exists(single_dir):
+        for f in os.listdir(single_dir):
+            p = os.path.join(single_dir, f)
+            if os.path.isdir(p):
+                all_known_folders[f] = {"loc": "single", "path": p}
+
+    next_id = get_max_existing_id(report_dir)
+
+    single_target_map = {}
+    for mod_name, s_list in single_sessions.items():
+        matched = match_module_folder(all_known_folders, mod_name)
+        if matched:
+            single_target_map[mod_name] = f"single/{matched}" if all_known_folders[matched]["loc"] == "single" else matched
+        else:
+            next_id += 1
+            suffix = "_multi" if mod_name in failed_in_multiple else ""
+            new_folder = f"{next_id:02d}.{mod_name}{suffix}"
+            single_target_map[mod_name] = f"single/{new_folder}"
+            all_known_folders[new_folder] = {"loc": "single", "path": os.path.join(single_dir, new_folder)}
+
+    tc_target_map = {}
+    for (mod_name, tc_name), s_list in tc_sessions.items():
+        matched = match_testcase_folder(all_known_folders, mod_name, tc_name)
+        if matched:
+            tc_target_map[(mod_name, tc_name)] = f"single/{matched}" if all_known_folders[matched]["loc"] == "single" else matched
+        else:
+            next_id += 1
+            new_folder = f"{next_id:02d}.{mod_name}_{sanitize_name(tc_name)}"
+            tc_target_map[(mod_name, tc_name)] = f"single/{new_folder}"
+            all_known_folders[new_folder] = {"loc": "single", "path": os.path.join(single_dir, new_folder)}
+
+    pruned_selection = set()
+    for s in select_history_sessions(multi_sessions):
+        pruned_selection.add(s["timestamp"])
+    for mod_name, s_list in single_sessions.items():
+        for s in select_history_sessions(s_list):
+            pruned_selection.add(s["timestamp"])
+    for (mod_name, tc_name), s_list in tc_sessions.items():
+        passes = [s for s in s_list if s["is_pass"]]
+        if passes:
+            pruned_selection.add(passes[-1]["timestamp"])
+
     latest_pass_map = {}
     for s in sessions:
         if s["is_pass"]:
-            k = "__MULTIPLE__" if s["type"] == "multiple" else s["module_name"]
+            if s["type"] == "multiple":
+                k = "__MULTIPLE__"
+            elif s["type"] == "testcase":
+                k = f"TESTCASE:{s['module_name']}#{s['testcase_name']}"
+            else:
+                k = s["module_name"]
             if k not in latest_pass_map or s["timestamp"] > latest_pass_map[k]["timestamp"]:
                 latest_pass_map[k] = s
 
-    # Check Report structure
-    single_dir = os.path.join(report_dir, "single")
-    root_report_folders = [f for f in os.listdir(report_dir) if os.path.isdir(os.path.join(report_dir, f))] if os.path.exists(report_dir) else []
-    single_subfolders = [f for f in os.listdir(single_dir) if os.path.isdir(os.path.join(single_dir, f))] if os.path.exists(single_dir) else []
-    
-    # Combine folders to search
-    all_known_folders = {}
-    for f in root_report_folders:
-        if f not in ["single", "results", "logs"]:
-            all_known_folders[f] = {"loc": "root", "path": os.path.join(report_dir, f)}
-    for f in single_subfolders:
-        all_known_folders[f] = {"loc": "single", "path": os.path.join(single_dir, f)}
-
-    # Build analysis for each session
     analyzed_sessions = []
     for s in sessions:
-        k = "__MULTIPLE__" if s["type"] == "multiple" else s["module_name"]
-        is_latest_pass = (s["is_pass"] and latest_pass_map.get(k, {}).get("timestamp") == s["timestamp"])
-        
-        # Target folder & copy status check
-        target_folder = ""
-        copy_status = "NOT_COPIED"
-        already_copied = False
-        has_res = False
-        has_log = False
-        
-        if s["type"] == "multiple":
-            # Check for 00. Multiple folder or root results
-            m_f = match_folder_for_module(list(all_known_folders.keys()), "Multiple", is_multi=True)
-            if m_f:
-                target_folder = m_f
-                dest_res = os.path.join(all_known_folders[m_f]["path"], "results", s["timestamp"])
-                dest_log = os.path.join(all_known_folders[m_f]["path"], "logs", s["timestamp"])
-            else:
-                target_folder = "Report/results (Root)"
-                dest_res = os.path.join(report_dir, "results", s["timestamp"])
-                dest_log = os.path.join(report_dir, "logs", s["timestamp"])
-            has_res = os.path.exists(dest_res)
-            has_log = os.path.exists(dest_log)
-        else:
-            s_f = match_folder_for_module(list(all_known_folders.keys()), s["module_name"], is_multi=False)
-            if s_f:
-                loc = all_known_folders[s_f]["loc"]
-                target_folder = f"{loc}/{s_f}"
-                dest_res = os.path.join(all_known_folders[s_f]["path"], "results", s["timestamp"])
-                dest_log = os.path.join(all_known_folders[s_f]["path"], "logs", s["timestamp"])
-                has_res = os.path.exists(dest_res)
-                has_log = os.path.exists(dest_log)
-            else:
-                target_folder = "[Chưa có folder mẫu]"
+        ts = s["timestamp"]
+        stype = s["type"]
+        is_selected = ts in pruned_selection
 
-        # Evaluate copy completeness (Must have BOTH result AND log)
+        if stype == "multiple":
+            k = "__MULTIPLE__"
+            target_folder = "Report/results (Root)"
+            dest_res = os.path.join(report_dir, "results", ts)
+            dest_log = os.path.join(report_dir, "logs", ts)
+        elif stype == "testcase":
+            k = f"TESTCASE:{s['module_name']}#{s['testcase_name']}"
+            target_folder = tc_target_map.get((s["module_name"], s["testcase_name"]), "[Chưa xác định]")
+            f_clean = target_folder.replace("single/", "")
+            dest_res = os.path.join(single_dir, f_clean, "results", ts)
+            dest_log = os.path.join(single_dir, f_clean, "logs", ts)
+        else:
+            k = s["module_name"]
+            target_folder = single_target_map.get(s["module_name"], "[Chưa xác định]")
+            f_clean = target_folder.replace("single/", "")
+            dest_res = os.path.join(single_dir, f_clean, "results", ts)
+            dest_log = os.path.join(single_dir, f_clean, "logs", ts)
+
+        has_res = os.path.exists(dest_res)
+        has_log = os.path.exists(dest_log)
+        already_copied = (has_res and has_log)
+
         if has_res and has_log:
             copy_status = "COPIED_FULL"
-            already_copied = True
         elif has_res and not has_log:
             copy_status = "MISSING_LOG"
-            already_copied = False
         elif not has_res and has_log:
             copy_status = "MISSING_RES"
-            already_copied = False
         else:
-            copy_status = "NOT_COPIED"
-            already_copied = False
+            if is_selected:
+                copy_status = "WILL_COPY"
+            elif not s["is_pass"] and stype == "testcase":
+                copy_status = "NOT_COPIED"
+            else:
+                copy_status = "PRUNED_SKIP"
 
-        status_tag = "FAIL"
-        if s["is_pass"]:
-            status_tag = "LATEST_PASS" if is_latest_pass else "OUTDATED_PASS"
+        is_latest_pass = (s["is_pass"] and latest_pass_map.get(k, {}).get("timestamp") == ts)
+        if stype == "testcase":
+            status_tag = "TESTCASE_PASS" if s["is_pass"] else "FAIL"
+        else:
+            if s["is_pass"]:
+                status_tag = "LATEST_PASS" if is_latest_pass else "OUTDATED_PASS"
+            else:
+                status_tag = "FAIL"
 
         analyzed_sessions.append({
-            "timestamp": s["timestamp"],
-            "type": s["type"],
+            "timestamp": ts,
+            "type": stype,
             "module_name": s["module_name"],
+            "testcase_name": s.get("testcase_name", ""),
             "pass": s["pass"],
             "fail": s["fail"],
             "total_modules": s["total_modules"],
@@ -258,6 +390,7 @@ def scan_and_analyze(test_root):
 
     return {
         "test_root": test_root,
+        "effective_report_dir": report_dir,
         "total_sessions": len(sessions),
         "passed_sessions_count": len([s for s in sessions if s["is_pass"]]),
         "latest_pass_count": len(latest_pass_map),
@@ -272,346 +405,387 @@ if __name__ == "__main__":
 """
 
 
+
 REMOTE_ORGANIZE_SCRIPT = r"""
 import os, glob, re, shutil, json, sys
+from collections import defaultdict
 
 def log(msg):
     print(msg, flush=True)
 
-def extract_modules_info_from_html(content, tot_mods):
-    idx = content.find("testsummary")
-    raw_modules = []
-    if idx != -1:
-        end_idx = content.find("</table>", idx)
-        table_html = content[idx:end_idx] if end_idx != -1 else content[idx:idx+50000]
-        rows = re.findall(r"<tr>(.*?)</tr>", table_html, re.DOTALL)
-        for row in rows[1:]:
-            m_td = re.search(r"<td[^>]*>(.*?)</td>", row, re.DOTALL)
-            if not m_td:
-                continue
-            clean_text = re.sub(r"<[^>]+>", "", m_td.group(1))
-            clean_text = clean_text.replace("&nbsp;", " ").replace("\xa0", " ").strip()
-            parts = clean_text.split()
-            if len(parts) >= 2 and any(arch in parts[0].lower() for arch in ["arm", "x86", "mips", "riscv"]):
-                raw_modules.append(parts[1])
-            elif len(parts) >= 1:
-                raw_modules.append(parts[0])
+def sanitize_name(name):
+    return re.sub(r'[\s\[\]#:$]+', '_', name).strip('_')
 
-    if not raw_modules:
-        for m_mod in re.finditer(r"<td class=[\"']module[\"'][^>]*>(.*?)</td>", content, re.DOTALL):
-            clean_text = re.sub(r"<[^>]+>", "", m_mod.group(1))
-            clean_text = clean_text.replace("&nbsp;", " ").replace("\xa0", " ").strip()
-            parts = clean_text.split()
-            if len(parts) >= 2 and any(arch in parts[0].lower() for arch in ["arm", "x86", "mips", "riscv"]):
-                raw_modules.append(parts[1])
-            elif len(parts) >= 1:
-                raw_modules.append(parts[0])
+def find_effective_report_dir(test_root):
+    r_dir = os.path.join(test_root, "Report")
+    if not os.path.exists(r_dir):
+        return r_dir
+    for item in os.listdir(r_dir):
+        p = os.path.join(r_dir, item)
+        if os.path.isdir(p) and re.match(r"^\d+\.", item):
+            if os.path.exists(os.path.join(p, "single")) or os.path.exists(os.path.join(p, "results")):
+                return p
+    return r_dir
 
-    # Strip [instant] or bracketed parameters to determine unique base module names
-    base_names = []
-    for m in raw_modules:
-        base = re.sub(r"\[.*?\]", "", m).strip()
-        if base and base not in base_names:
-            base_names.append(base)
-
-    if len(base_names) == 1:
-        return "single", base_names[0]
-    elif len(base_names) > 1:
-        return "multiple", "Multiple"
-    else:
-        if tot_mods == 1:
-            return "single", "Unknown"
-        else:
-            return "multiple", "Multiple"
-
-def parse_html_session(dir_path):
+def parse_session(dir_path):
+    xml_path = os.path.join(dir_path, "test_result.xml")
     html_path = os.path.join(dir_path, "test_result_failures_suite.html")
-    if not os.path.exists(html_path):
-        return None
-    try:
-        with open(html_path, "r", errors="ignore") as f:
-            content = f.read(60000)
+    
+    cmd_args = ""
+    mod_name = ""
+    test_method = ""
+    total_tests = 0
+    pass_cnt = 0
+    fail_cnt = -1
+    tot_mods = 0
+    done_mods = 0
+    
+    if os.path.exists(xml_path):
+        try:
+            with open(xml_path, "r", errors="ignore") as f:
+                header = f.read(35000)
+            m_cmd = re.search(r'command_line_args="([^"]*)"', header)
+            if m_cmd:
+                cmd_args = m_cmd.group(1)
+            m_sum = re.search(r'<Summary\s+pass="(\d+)"\s+failed="(\d+)"[^>]*modules_done="(\d+)"\s+modules_total="(\d+)"', header)
+            if m_sum:
+                pass_cnt = int(m_sum.group(1))
+                fail_cnt = int(m_sum.group(2))
+                done_mods = int(m_sum.group(3))
+                tot_mods = int(m_sum.group(4))
+            m_mod = re.search(r'<Module\s+name="([^"]+)"[^>]*total_tests="(\d+)"', header)
+            if m_mod:
+                mod_name = m_mod.group(1)
+                total_tests = int(m_mod.group(2))
+            m_test = re.search(r'<Test\s+result="[^"]*"\s+name="([^"]+)"', header)
+            if m_test:
+                test_method = m_test.group(1)
+        except Exception:
+            pass
+
+    if not mod_name and os.path.exists(html_path):
+        try:
+            with open(html_path, "r", errors="ignore") as f:
+                content = f.read(60000)
+            m_pass = re.search(r"Tests Passed</td><td>(\d+)</td>", content)
+            m_fail = re.search(r"Tests Failed</td><td>(\d+)</td>", content)
+            m_tot = re.search(r"Modules Total</td><td>(\d+)</td>", content)
+            m_done = re.search(r"Modules Done</td><td>(\d+)</td>", content)
+            if m_pass: pass_cnt = int(m_pass.group(1))
+            if m_fail: fail_cnt = int(m_fail.group(1))
+            if m_tot: tot_mods = int(m_tot.group(1))
+            if m_done: done_mods = int(m_done.group(1))
             
-        m_pass = re.search(r"Tests Passed</td><td>(\d+)</td>", content)
-        m_fail = re.search(r"Tests Failed</td><td>(\d+)</td>", content)
-        m_tot = re.search(r"Modules Total</td><td>(\d+)</td>", content)
-        m_done = re.search(r"Modules Done</td><td>(\d+)</td>", content)
-        
-        pass_cnt = int(m_pass.group(1)) if m_pass else 0
-        fail_cnt = int(m_fail.group(1)) if m_fail else -1
-        tot_mods = int(m_tot.group(1)) if m_tot else 0
-        done_mods = int(m_done.group(1)) if m_done else 0
-        
-        sess_type, mod_name = extract_modules_info_from_html(content, tot_mods)
-            
-        return {
-            "pass": pass_cnt,
-            "fail": fail_cnt,
-            "total_modules": tot_mods,
-            "done_modules": done_mods,
-            "module_name": mod_name,
-            "is_pass": (fail_cnt == 0 and tot_mods > 0 and done_mods == tot_mods),
-            "type": sess_type
-        }
-    except Exception:
-        return None
+            idx = content.find("testsummary")
+            if idx != -1:
+                end_idx = content.find("</table>", idx)
+                t_html = content[idx:end_idx] if end_idx != -1 else content[idx:idx+50000]
+                rows = re.findall(r"<tr>(.*?)</tr>", t_html, re.DOTALL)
+                for row in rows[1:]:
+                    m_td = re.search(r"<td[^>]*>(.*?)</td>", row, re.DOTALL)
+                    if m_td:
+                        clean = re.sub(r"<[^>]+>", "", m_td.group(1)).replace("&nbsp;", " ").strip()
+                        parts = clean.split()
+                        if len(parts) >= 2 and any(a in parts[0].lower() for a in ["arm", "x86", "mips", "riscv"]):
+                            mod_name = parts[1]
+                        elif len(parts) >= 1:
+                            mod_name = parts[0]
+                        break
+        except Exception:
+            pass
 
+    is_testcase = False
+    if (" -t " in cmd_args or "#" in cmd_args) and test_method:
+        is_testcase = True
+    elif tot_mods == 1 and total_tests == 1 and test_method:
+        if "#" in cmd_args or " -t " in cmd_args or "filter" in cmd_args:
+            is_testcase = True
 
-def folder_has_pass_result(folder_path):
-    res_dir = os.path.join(folder_path, "results")
-    logs_dir = os.path.join(folder_path, "logs")
-    if not os.path.exists(res_dir):
-        return False
-    for item in os.listdir(res_dir):
-        sub_res = os.path.join(res_dir, item)
-        if os.path.isdir(sub_res):
-            parsed = parse_html_session(sub_res)
-            if parsed and parsed["is_pass"]:
-                # Đảm bảo cả log cũng phải tồn tại cho session pass này
-                sub_log = os.path.join(logs_dir, item)
-                if os.path.exists(sub_log) and os.path.isdir(sub_log):
-                    return True
-    return False
+    if is_testcase:
+        sess_type = "testcase"
+    elif tot_mods > 1 or "Multiple" in cmd_args or mod_name.lower() == "multiple":
+        sess_type = "multiple"
+        mod_name = "Multiple"
+    else:
+        sess_type = "single"
 
-def match_folder_for_module(folders, mod_name, is_multi=False):
-    if is_multi:
-        for f in folders:
-            if "multiple" in f.lower():
-                return f
-        return None
+    is_pass = (fail_cnt == 0 and tot_mods > 0 and done_mods == tot_mods and pass_cnt > 0)
+
+    return {
+        "pass": pass_cnt,
+        "fail": fail_cnt,
+        "total_modules": tot_mods,
+        "done_modules": done_mods,
+        "module_name": mod_name or "Unknown",
+        "testcase_name": test_method if is_testcase else "",
+        "is_pass": is_pass,
+        "type": sess_type,
+        "cmd": cmd_args
+    }
+
+def select_history_sessions(sessions):
+    if len(sessions) < 5:
+        return sessions
+    return [sessions[0], sessions[1], sessions[-2], sessions[-1]]
+
+def get_max_existing_id(report_dir):
+    single_dir = os.path.join(report_dir, "single")
+    folders = []
+    if os.path.exists(report_dir):
+        folders.extend(os.listdir(report_dir))
+    if os.path.exists(single_dir):
+        folders.extend(os.listdir(single_dir))
+    max_id = 0
     for f in folders:
+        m = re.match(r"^(\d+)\.", f)
+        if m:
+            val = int(m.group(1))
+            if val > max_id:
+                max_id = val
+    return max_id
+
+def match_module_folder(all_known_folders, mod_name):
+    for f in all_known_folders:
         clean = re.sub(r"^\d+\.\s*", "", f).strip()
         if clean.lower() == mod_name.lower():
             return f
-    for f in folders:
+    mod_base = re.sub(r'(Device)?TestCases$', '', mod_name, flags=re.I).lower()
+    for f in all_known_folders:
+        clean = re.sub(r"^\d+\.\s*", "", f).strip()
+        clean_base = re.sub(r'((Device)?TestCases)?(_multi)?$', '', clean, flags=re.I).lower()
+        if clean_base == mod_base:
+            return f
+    for f in all_known_folders:
         if mod_name.lower() in f.lower():
             return f
     return None
 
+def match_testcase_folder(all_known_folders, mod_name, tc_name):
+    mod_base = re.sub(r'(Device)?TestCases$', '', mod_name, flags=re.I).lower()
+    tc_clean = tc_name.lower()
+    for f in all_known_folders:
+        f_lower = f.lower()
+        if mod_base in f_lower:
+            if tc_clean in f_lower:
+                return f
+            tc_stem = re.sub(r'ifsupported|test', '', tc_clean)
+            if tc_stem and tc_stem in f_lower:
+                return f
+            if any(part in f_lower for part in tc_clean.split('_') if len(part) > 6):
+                return f
+    return None
+
+def copy_session(src_res_dir, src_logs_dir, dst_res_dir, dst_logs_dir, ts):
+    copied = False
+    os.makedirs(dst_res_dir, exist_ok=True)
+    os.makedirs(dst_logs_dir, exist_ok=True)
+
+    s_rf = os.path.join(src_res_dir, ts)
+    d_rf = os.path.join(dst_res_dir, ts)
+    if os.path.exists(s_rf) and not os.path.exists(d_rf):
+        log(f"   -> [COPY RESULT] {ts} -> {dst_res_dir}")
+        shutil.copytree(s_rf, d_rf)
+        copied = True
+    elif os.path.exists(d_rf):
+        log(f"   -> [SKIP RESULT] Đã có: {ts}")
+
+    s_zip = os.path.join(src_res_dir, ts + ".zip")
+    d_zip = os.path.join(dst_res_dir, ts + ".zip")
+    if os.path.exists(s_zip) and not os.path.exists(d_zip):
+        shutil.copy2(s_zip, d_zip)
+
+    s_lf = os.path.join(src_logs_dir, ts)
+    d_lf = os.path.join(dst_logs_dir, ts)
+    if os.path.exists(s_lf) and not os.path.exists(d_lf):
+        log(f"   -> [COPY LOG] {ts} -> {dst_logs_dir}")
+        shutil.copytree(s_lf, d_lf)
+        copied = True
+    elif os.path.exists(d_lf):
+        log(f"   -> [SKIP LOG] Đã có: {ts}")
+
+    return copied
+
 def execute_organize(test_root):
     results_dir = os.path.join(test_root, "results")
     logs_dir = os.path.join(test_root, "logs")
-    report_dir = os.path.join(test_root, "Report")
+    report_dir = find_effective_report_dir(test_root)
+    single_dir = os.path.join(report_dir, "single")
     
     log(f"=== BẮT ĐẦU THU THẬP & TỔ CHỨC REPORT TẠI: {report_dir} ===")
     
     if not os.path.exists(results_dir):
         log(f"[ERROR] Không tìm thấy thư mục results tại: {results_dir}")
         return False
-    if not os.path.exists(report_dir):
-        log(f"[ERROR] Không tìm thấy thư mục Report tại: {report_dir}")
-        return False
 
-    # 1. Scan results and find latest pass per module
-    log("[BƯỚC 1] Quét các session kết quả trong results/...")
+    os.makedirs(report_dir, exist_ok=True)
+    os.makedirs(single_dir, exist_ok=True)
+
+    log("[BƯỚC 1] Quét và phân loại các session kết quả trong results/...")
     sessions = []
     for item in sorted(os.listdir(results_dir)):
         p = os.path.join(results_dir, item)
         if not os.path.isdir(p) or item == "latest":
             continue
-        parsed = parse_html_session(p)
+        parsed = parse_session(p)
         if parsed:
             parsed["timestamp"] = item
             sessions.append(parsed)
 
-    latest_pass_map = {}
+    multi_sessions = [s for s in sessions if s["type"] == "multiple"]
+    single_sessions = defaultdict(list)
+    tc_sessions = defaultdict(list)
+
+    failed_in_multiple = set()
+    for s in multi_sessions:
+        xml_p = os.path.join(results_dir, s["timestamp"], "test_result.xml")
+        if os.path.exists(xml_p):
+            try:
+                with open(xml_p, "r", errors="ignore") as f:
+                    for line in f:
+                        if "<Module " in line:
+                            m_m = re.search(r'name="([^"]+)"[^>]*done="([^"]+)"', line)
+                            if m_m and m_m.group(2).lower() != "true":
+                                failed_in_multiple.add(m_m.group(1))
+                            m_f = re.search(r'name="([^"]+)"[^>]*failed="([1-9]\d*)"', line)
+                            if m_f:
+                                failed_in_multiple.add(m_f.group(1))
+            except Exception:
+                pass
+
     for s in sessions:
-        if s["is_pass"]:
-            k = "__MULTIPLE__" if s["type"] == "multiple" else s["module_name"]
-            if k not in latest_pass_map or s["timestamp"] > latest_pass_map[k]["timestamp"]:
-                latest_pass_map[k] = s
+        if s["type"] == "single":
+            single_sessions[s["module_name"]].append(s)
+        elif s["type"] == "testcase":
+            tc_sessions[(s["module_name"], s["testcase_name"])].append(s)
 
-    log(f"-> Tìm thấy tổng cộng {len(sessions)} sessions. Trong đó có {len(latest_pass_map)} module đạt chuẩn Pass (Fail=0).")
-    for k, v in latest_pass_map.items():
-        log(f"   [PASS] {k} -> Session: {v['timestamp']} (Pass: {v['pass']})")
+    log(f"-> Quét được: {len(multi_sessions)} Multiple, {len(single_sessions)} Single Modules, {len(tc_sessions)} Testcase groups.")
 
-    # 2. Map existing Report folders
-    single_dir = os.path.join(report_dir, "single")
-    os.makedirs(single_dir, exist_ok=True)
-
-    root_report_folders = [f for f in os.listdir(report_dir) if os.path.isdir(os.path.join(report_dir, f))]
-    single_subfolders = [f for f in os.listdir(single_dir) if os.path.isdir(os.path.join(single_dir, f))]
-    
     all_known_folders = {}
-    for f in root_report_folders:
-        if f not in ["single", "results", "logs"]:
-            all_known_folders[f] = {"loc": "root", "path": os.path.join(report_dir, f)}
-    for f in single_subfolders:
-        all_known_folders[f] = {"loc": "single", "path": os.path.join(single_dir, f)}
+    if os.path.exists(report_dir):
+        for f in os.listdir(report_dir):
+            p = os.path.join(report_dir, f)
+            if os.path.isdir(p) and f not in ["single", "results", "logs"]:
+                all_known_folders[f] = {"loc": "root", "path": p}
+    if os.path.exists(single_dir):
+        for f in os.listdir(single_dir):
+            p = os.path.join(single_dir, f)
+            if os.path.isdir(p):
+                all_known_folders[f] = {"loc": "single", "path": p}
 
-    # 3. Copy files
-    log("\n[BƯỚC 2] Tiến hành kiểm tra và sao chép log & result (bổ sung nếu thiếu)...")
-    copied_count = 0
-    skipped_count = 0
+    next_id = get_max_existing_id(report_dir)
 
-    # Multiple copy
-    if "__MULTIPLE__" in latest_pass_map:
-        m_s = latest_pass_map["__MULTIPLE__"]
-        ts = m_s["timestamp"]
-        m_f = match_folder_for_module(list(all_known_folders.keys()), "Multiple", is_multi=True)
-        
-        if m_f:
-            dest_res_dir = os.path.join(all_known_folders[m_f]["path"], "results")
-            dest_log_dir = os.path.join(all_known_folders[m_f]["path"], "logs")
+    log("\n[BƯỚC 2] Thu thập session Multiple (áp dụng chọn lọc 2 đầu + 2 cuối)...")
+    if multi_sessions:
+        selected_multi = select_history_sessions(multi_sessions)
+        dest_res = os.path.join(report_dir, "results")
+        dest_log = os.path.join(report_dir, "logs")
+        log(f"-> Multiple: {len(multi_sessions)} sessions -> Chọn giữ {len(selected_multi)} sessions:")
+        for s in selected_multi:
+            copy_session(results_dir, logs_dir, dest_res, dest_log, s["timestamp"])
+
+    log("\n[BƯỚC 3] Thu thập Single Modules vào Report/single/...")
+    for mod_name, s_list in single_sessions.items():
+        matched = match_module_folder(all_known_folders, mod_name)
+        if matched:
+            target_fol_name = matched
+            target_base = all_known_folders[matched]["path"]
         else:
-            dest_res_dir = os.path.join(report_dir, "results")
-            dest_log_dir = os.path.join(report_dir, "logs")
+            next_id += 1
+            suffix = "_multi" if mod_name in failed_in_multiple else ""
+            target_fol_name = f"{next_id:02d}.{mod_name}{suffix}"
+            target_base = os.path.join(single_dir, target_fol_name)
+            all_known_folders[target_fol_name] = {"loc": "single", "path": target_base}
 
-        os.makedirs(dest_res_dir, exist_ok=True)
-        os.makedirs(dest_log_dir, exist_ok=True)
+        dest_res = os.path.join(target_base, "results")
+        dest_log = os.path.join(target_base, "logs")
 
-        # Copy result folder
-        src_res = os.path.join(results_dir, ts)
-        dst_res = os.path.join(dest_res_dir, ts)
-        if not os.path.exists(dst_res):
-            log(f"-> [COPY RESULT] Multiple: {ts} -> {dest_res_dir}")
-            shutil.copytree(src_res, dst_res)
-            copied_count += 1
-        else:
-            log(f"-> [SKIP RESULT] Multiple result đã có sẵn: {ts}")
-            skipped_count += 1
+        selected_s = select_history_sessions(s_list)
+        log(f"-> Module '{mod_name}' -> Thư mục: {target_fol_name} ({len(s_list)} sessions -> Giữ {len(selected_s)}):")
+        for s in selected_s:
+            copy_session(results_dir, logs_dir, dest_res, dest_log, s["timestamp"])
 
-        # Copy result zip
-        src_zip = os.path.join(results_dir, ts + ".zip")
-        dst_zip = os.path.join(dest_res_dir, ts + ".zip")
-        if os.path.exists(src_zip) and not os.path.exists(dst_zip):
-            shutil.copy2(src_zip, dst_zip)
-
-        # Copy log folder - CHECK VÀ COPY BỔ SUNG NẾU THIẾU
-        src_log = os.path.join(logs_dir, ts)
-        dst_log = os.path.join(dest_log_dir, ts)
-        if os.path.exists(src_log):
-            if not os.path.exists(dst_log):
-                log(f"-> [COPY BỔ SUNG LOG] Multiple log: {ts} -> {dest_log_dir}")
-                shutil.copytree(src_log, dst_log)
-                copied_count += 1
-            else:
-                log(f"-> [SKIP LOG] Multiple log đã có sẵn: {ts}")
-                skipped_count += 1
-        else:
-            log(f"-> [CẢNH BÁO] Không tìm thấy source log của Multiple tại {src_log}!")
-
-    # Single modules copy
-    for mod_key, s_info in latest_pass_map.items():
-        if mod_key == "__MULTIPLE__":
-            continue
-        ts = s_info["timestamp"]
-        s_f = match_folder_for_module(list(all_known_folders.keys()), mod_key, is_multi=False)
-        if not s_f:
-            log(f"[CẢNH BÁO] Không tìm thấy folder mẫu nào cho module: {mod_key} trong Report!")
+    log("\n[BƯỚC 4] Thu thập các Testcase chạy lẻ đã Pass vào Report/single/...")
+    for (mod_name, tc_name), s_list in tc_sessions.items():
+        passes = [s for s in s_list if s["is_pass"]]
+        if not passes:
+            log(f"-> Testcase '{mod_name}#{tc_name}': Chưa có session Pass -> Bỏ qua.")
             continue
 
-        target_base = all_known_folders[s_f]["path"]
-        dest_res_dir = os.path.join(target_base, "results")
-        dest_log_dir = os.path.join(target_base, "logs")
-        os.makedirs(dest_res_dir, exist_ok=True)
-        os.makedirs(dest_log_dir, exist_ok=True)
-
-        # Copy result folder
-        src_res = os.path.join(results_dir, ts)
-        dst_res = os.path.join(dest_res_dir, ts)
-        if not os.path.exists(dst_res):
-            log(f"-> [COPY RESULT] Module {mod_key}: {ts} -> {s_f}/results/")
-            shutil.copytree(src_res, dst_res)
-            copied_count += 1
+        best_s = passes[-1]
+        matched = match_testcase_folder(all_known_folders, mod_name, tc_name)
+        if matched:
+            target_fol_name = matched
+            target_base = all_known_folders[matched]["path"]
         else:
-            log(f"-> [SKIP RESULT] Module {mod_key} result đã có sẵn: {ts}")
-            skipped_count += 1
+            next_id += 1
+            target_fol_name = f"{next_id:02d}.{mod_name}_{sanitize_name(tc_name)}"
+            target_base = os.path.join(single_dir, target_fol_name)
+            all_known_folders[target_fol_name] = {"loc": "single", "path": target_base}
 
-        # Copy zip
-        src_zip = os.path.join(results_dir, ts + ".zip")
-        dst_zip = os.path.join(dest_res_dir, ts + ".zip")
-        if os.path.exists(src_zip) and not os.path.exists(dst_zip):
-            shutil.copy2(src_zip, dst_zip)
+        dest_res = os.path.join(target_base, "results")
+        dest_log = os.path.join(target_base, "logs")
+        log(f"-> [PASS TESTCASE] '{mod_name}#{tc_name}' -> Thư mục: {target_fol_name} (Session: {best_s['timestamp']})")
+        copy_session(results_dir, logs_dir, dest_res, dest_log, best_s["timestamp"])
 
-        # Copy log folder - CHECK VÀ COPY BỔ SUNG NẾU THIẾU
-        src_log = os.path.join(logs_dir, ts)
-        dst_log = os.path.join(dest_log_dir, ts)
-        if os.path.exists(src_log):
-            if not os.path.exists(dst_log):
-                log(f"-> [COPY BỔ SUNG LOG] Module {mod_key} log: {ts} -> {s_f}/logs/")
-                shutil.copytree(src_log, dst_log)
-                copied_count += 1
-            else:
-                log(f"-> [SKIP LOG] Module {mod_key} log đã có sẵn: {ts}")
-                skipped_count += 1
-        else:
-            log(f"-> [CẢNH BÁO] Không tìm thấy source log của Module {mod_key} tại {src_log}!")
+    log("\n[BƯỚC 5] Tái cấu trúc chuẩn hóa: Đưa toàn bộ module đơn lẻ vào Report/single/...")
 
-    # 4. Reorganize Report structure
-    log("\n[BƯỚC 3] Tái cấu trúc thư mục Report theo trạng thái Pass / Chưa Pass...")
-
-    # Refresh root folders
-    current_root_folders = [f for f in os.listdir(report_dir) if os.path.isdir(os.path.join(report_dir, f))]
-    
-    # Process Multiple folder
-    m_folder = match_folder_for_module(current_root_folders, "Multiple", is_multi=True)
+    m_folder = None
+    if os.path.exists(report_dir):
+        for f in os.listdir(report_dir):
+            if "multiple" in f.lower() and os.path.isdir(os.path.join(report_dir, f)):
+                m_folder = f
+                break
     if m_folder:
         m_path = os.path.join(report_dir, m_folder)
-        if folder_has_pass_result(m_path) or ("__MULTIPLE__" in latest_pass_map):
-            log(f"-> Multiple ĐÃ PASS: Di chuyển results/ và logs/ từ '{m_folder}' ra ngoài Report/")
-            # Move results
-            inner_res = os.path.join(m_path, "results")
-            outer_res = os.path.join(report_dir, "results")
-            os.makedirs(outer_res, exist_ok=True)
-            if os.path.exists(inner_res):
-                for item in os.listdir(inner_res):
-                    s_item = os.path.join(inner_res, item)
-                    d_item = os.path.join(outer_res, item)
-                    if not os.path.exists(d_item):
-                        shutil.move(s_item, d_item)
+        log(f"-> Dọn dẹp chuyển kết quả từ '{m_folder}' ra root Report/results và logs...")
+        in_res = os.path.join(m_path, "results")
+        out_res = os.path.join(report_dir, "results")
+        os.makedirs(out_res, exist_ok=True)
+        if os.path.exists(in_res):
+            for item in os.listdir(in_res):
+                s_p = os.path.join(in_res, item)
+                d_p = os.path.join(out_res, item)
+                if not os.path.exists(d_p):
+                    shutil.move(s_p, d_p)
 
-            # Move logs
-            inner_log = os.path.join(m_path, "logs")
-            outer_log = os.path.join(report_dir, "logs")
-            os.makedirs(outer_log, exist_ok=True)
-            if os.path.exists(inner_log):
-                for item in os.listdir(inner_log):
-                    s_item = os.path.join(inner_log, item)
-                    d_item = os.path.join(outer_log, item)
-                    if not os.path.exists(d_item):
-                        shutil.move(s_item, d_item)
+        in_log = os.path.join(m_path, "logs")
+        out_log = os.path.join(report_dir, "logs")
+        os.makedirs(out_log, exist_ok=True)
+        if os.path.exists(in_log):
+            for item in os.listdir(in_log):
+                s_p = os.path.join(in_log, item)
+                d_p = os.path.join(out_log, item)
+                if not os.path.exists(d_p):
+                    shutil.move(s_p, d_p)
 
-            # Remove empty folder
-            try:
-                shutil.rmtree(m_path)
-                log(f"-> Đã dọn dẹp thư mục rỗng '{m_folder}' thành công.")
-            except Exception as e:
-                log(f"-> Lưu ý: Không thể xóa '{m_folder}': {e}")
-        else:
-            log(f"-> Multiple CHƯA PASS: Giữ nguyên thư mục '{m_folder}' ngang cấp với single/")
+        try:
+            shutil.rmtree(m_path)
+            log(f"-> Đã xóa thư mục '{m_folder}' sau khi chuyển.")
+        except Exception:
+            pass
 
-    # Process single folders currently at root
-    current_root_folders = [f for f in os.listdir(report_dir) if os.path.isdir(os.path.join(report_dir, f))]
-    for folder in current_root_folders:
-        if folder in ["single", "results", "logs"]:
-            continue
-        if "multiple" in folder.lower():
-            continue
-        
-        folder_path = os.path.join(report_dir, folder)
-        has_passed = folder_has_pass_result(folder_path)
-        
-        if has_passed:
-            dest_in_single = os.path.join(single_dir, folder)
-            log(f"-> Module '{folder}' ĐÃ PASS: Di chuyển vào Report/single/{folder}")
-            if os.path.exists(dest_in_single):
-                # Merge into existing single folder
-                for sub in ["results", "logs"]:
-                    src_sub = os.path.join(folder_path, sub)
-                    dst_sub = os.path.join(dest_in_single, sub)
-                    os.makedirs(dst_sub, exist_ok=True)
-                    if os.path.exists(src_sub):
-                        for f_item in os.listdir(src_sub):
-                            src_f = os.path.join(src_sub, f_item)
-                            dst_f = os.path.join(dst_sub, f_item)
-                            if not os.path.exists(dst_f):
-                                shutil.move(src_f, dst_f)
-                shutil.rmtree(folder_path, ignore_errors=True)
-            else:
-                shutil.move(folder_path, dest_in_single)
-        else:
-            log(f"-> Module '{folder}' CHƯA PASS: Giữ nguyên vị trí ngoài root (ngang cấp single/)")
+    if os.path.exists(report_dir):
+        for item in os.listdir(report_dir):
+            if item in ["results", "logs", "single"]:
+                continue
+            item_path = os.path.join(report_dir, item)
+            if os.path.isdir(item_path) and re.match(r"^\d+\.", item):
+                dest_in_single = os.path.join(single_dir, item)
+                log(f"-> Di chuyển '{item}' từ root vào Report/single/{item}")
+                if os.path.exists(dest_in_single):
+                    for sub in ["results", "logs"]:
+                        s_sub = os.path.join(item_path, sub)
+                        d_sub = os.path.join(dest_in_single, sub)
+                        os.makedirs(d_sub, exist_ok=True)
+                        if os.path.exists(s_sub):
+                            for sub_item in os.listdir(s_sub):
+                                s_file = os.path.join(s_sub, sub_item)
+                                d_file = os.path.join(d_sub, sub_item)
+                                if not os.path.exists(d_file):
+                                    shutil.move(s_file, d_file)
+                    shutil.rmtree(item_path, ignore_errors=True)
+                else:
+                    shutil.move(item_path, dest_in_single)
 
     log("\n🎉 HOÀN TẤT THU THẬP VÀ TỔ CHỨC BÁO CÁO REPORT THÀNH CÔNG! 🎉")
     return True
