@@ -472,13 +472,16 @@ echo "SYNC_APTRA_COMPLETE"
 
             excel_files = [f for f in files if f.endswith("Result.xlsx") or f.endswith("Results.xlsx")]
             csv_files = [f for f in files if f.endswith(".csv")]
-            self.log(f"Tìm thấy {len(excel_files)} file Excel kết quả và {len(csv_files)} file CSV trên APTRA.", "SUCCESS")
+            self.log(f"Tìm thấy {len(excel_files)} file Excel kết quả và {len(csv_files)} file CSV trên APTRA.", "SUCCESS" if excel_files else "WARN")
             if not excel_files:
-                self.log("[WARN] Chưa tìm thấy file *Result.xlsx trên APTRA! Tiếp tục với các dữ liệu hiện có.", "WARN")
+                self.log(f"[ERROR] Không tìm thấy file *Result.xlsx nào trên APTRA ({remote_dir})!", "ERROR")
+                return False, f"Server APTRA ({remote_dir}) chưa sinh file kết quả *Result.xlsx. Vui lòng đợi APTRA hoàn tất phân tích rồi chạy lại bước này."
+            
+            self.log(f"Danh sách file Excel trên APTRA ({len(excel_files)} file): {', '.join(sorted(excel_files))}", "INFO")
         except Exception as e:
             self.log(f"[WARN] Không thể kiểm tra trực tiếp APTRA: {e}", "WARN")
 
-        return True, "Người dùng đã xác nhận hoàn tất phân tích trên APTRA."
+        return True, f"Xác nhận hoàn tất phân tích APTRA (tìm thấy {len(excel_files)} file Excel)."
 
     # -------------------------------------------------------------------------
     # Step 4: Download lightweight result files to Local Windows
@@ -496,6 +499,15 @@ echo "SYNC_APTRA_COMPLETE"
         # 1. Download *Result.xlsx from APTRA
         self.log("Kết nối SFTP tới APTRA để tải các file kết quả kiểm thử (.xlsx)...", "INFO")
         try:
+            # Clean local_raw to avoid retaining outdated files from previous runs
+            if os.path.exists(local_raw):
+                for old_f in os.listdir(local_raw):
+                    if old_f.endswith(".xlsx") or old_f.endswith(".csv"):
+                        try:
+                            os.remove(os.path.join(local_raw, old_f))
+                        except Exception:
+                            pass
+
             client, sftp = self._open_sftp_connection(
                 aptra_cfg.get("host", "loghub.lge.com"),
                 aptra_cfg.get("port", 22),
@@ -517,6 +529,8 @@ echo "SYNC_APTRA_COMPLETE"
             sftp.close()
             client.close()
             self.log(f"Đã tải {downloaded_suites} file Excel từ APTRA về: {local_raw}", "SUCCESS")
+            if downloaded_suites == 0:
+                return False, f"Không tải được file Excel kết quả nào từ APTRA ({remote_dir})! Vui lòng đảm bảo server APTRA đã hoàn tất phân tích."
         except Exception as e:
             return False, f"Lỗi khi tải kết quả từ APTRA: {str(e)}"
 
@@ -575,6 +589,15 @@ echo "SYNC_APTRA_COMPLETE"
         p = self._get_paths()
         local_raw = p["local_raw_dir"]
         local_final = p["local_final_dir"]
+
+        # Clean old 03.*.xlsx in local_final to ensure fresh consistent reports
+        if os.path.exists(local_final):
+            for old_f in os.listdir(local_final):
+                if old_f.startswith("03.") and old_f.endswith(".xlsx"):
+                    try:
+                        os.remove(os.path.join(local_final, old_f))
+                    except Exception:
+                        pass
 
         raw_files = [f for f in os.listdir(local_raw) if f.endswith(".xlsx")]
         if not raw_files:
