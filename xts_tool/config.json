@@ -40,7 +40,7 @@
     "raw_path": "/home/lge/GoogleQA/Report_tmp/01.Full/",
     "aptra_path": "/home/aptra/APTRA/Nissan_AIVI_Full_12.3_PZ1D_26MY/YAK.31.04.10",
     "googleqa_dest_path": "/home/googleqa/GOOGLEQA/Official_Test_results/Nissan_AIVI_Full_12.3_PZ1D_26MY/YAK.31.04.10",
-    "report_generator_script": "/home/lge/Environment/tools/GenerReport_Update_0623/ReportGenerator.py",
+    "report_generator_script": "/home/lge/GoogleQA/00.NISSAN_PZ1D/00.REPORT/GenerReport_Update_0702/ReportGenerator.py",
     "prev_summary_path": "/home/googleqa/GOOGLEQA/Official_Test_results/Nissan_AIVI_Full_12.3_PZ1D_26MY/YAK.31.03.30/Nissan_PZ1D_Google Certification Summary_31.03.30.xlsx",
     "aptra_server": {
       "host": "loghub.lge.com",

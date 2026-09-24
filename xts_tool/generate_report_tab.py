@@ -179,10 +179,15 @@ class GenerateReportTab(QWidget):
         self.date_end.setDate(QDate.currentDate())
         meta_layout.addWidget(self.date_end, 2, 5)
 
-        # Row 3: Raw Path on Connected Server
+        # Row 3: Raw Path on Connected Server & ReportGenerator Tool Path
         meta_layout.addWidget(QLabel("<b>Raw Path (Server):</b>"), 3, 0)
         self.txt_raw_path = QLineEdit("/home/lge/GoogleQA/Report_tmp/01.Full/")
-        meta_layout.addWidget(self.txt_raw_path, 3, 1, 1, 7)
+        meta_layout.addWidget(self.txt_raw_path, 3, 1, 1, 3)
+
+        meta_layout.addWidget(QLabel("<b>Tool Path (Server):</b>"), 3, 4)
+        self.txt_generator_path = QLineEdit("/home/lge/GoogleQA/00.NISSAN_PZ1D/00.REPORT/GenerReport_Update_0702/")
+        self.txt_generator_path.setPlaceholderText("Folder chứa ReportGenerator.py hoặc đường dẫn file .py")
+        meta_layout.addWidget(self.txt_generator_path, 3, 5, 1, 3)
 
         # Row 4: Previous Summary Template Path
         meta_layout.addWidget(QLabel("<b>Previous Summary:</b>"), 4, 0)
@@ -210,6 +215,10 @@ class GenerateReportTab(QWidget):
         self.txt_googleqa_dest = QLineEdit("/home/googleqa/GOOGLEQA/Official_Test_results/Nissan_AIVI_Full_12.3_PZ1D_26MY/YAK.31.03.30")
         self.txt_googleqa_dest.setPlaceholderText("GOOGLEQA release directory (upload file 00 - 03 & Summary)")
         meta_layout.addWidget(self.txt_googleqa_dest, 6, 1, 1, 7)
+
+        # Auto-sync derived paths when Model or SW Version changes
+        self.txt_model_full.textChanged.connect(self._sync_derived_paths)
+        self.txt_sw_ver.textChanged.connect(self._sync_derived_paths)
 
         main_layout.addWidget(meta_group)
 
@@ -274,7 +283,7 @@ class GenerateReportTab(QWidget):
         step_descriptions = [
             "Chạy ReportGenerator.py -p <raw_path> để sinh 00.Internal và các file zip",
             "Đồng bộ thư mục 00.Internal/*Results (HTML, XML, DataforAuto) sang APTRA (4 luồng song song, siêu nhanh)",
-            "Hiện Pop-up nhắc kỹ sư kích hoạt APTRA Analysis & chờ xác nhận",
+            "Tự động kích hoạt script phân tích trên APTRA (10.157.116.185) qua SSH, stream log trực tiếp và kiểm tra *Result.xlsx",
             "Tải *Result.xlsx từ APTRA, Summary mẫu từ GOOGLEQA, và CTS_Verifier XML về Local Windows",
             "Đổi tên file 03.*, điền Header metadata, unmerge B17:F17, xóa rows 15-40 bằng openpyxl",
             "Chèn khối version mới vào sheet Summary, tính =SUM, cập nhật Fail Module & TestCase List",
@@ -308,6 +317,14 @@ class GenerateReportTab(QWidget):
             self.table_steps.setCellWidget(idx, 4, btn_run_step)
 
         main_layout.addWidget(self.table_steps, 1)
+    def _sync_derived_paths(self):
+        """Automatically updates APTRA and GOOGLEQA destination paths when Model or SW Version changes."""
+        model = self.txt_model_full.text().strip()
+        sw = self.txt_sw_ver.text().strip()
+        if model and sw:
+            self.txt_aptra_path.setText(f"/home/aptra/APTRA/{model}/{sw}")
+            self.txt_googleqa_dest.setText(f"/home/googleqa/GOOGLEQA/Official_Test_results/{model}/{sw}")
+
     def _load_config_defaults(self):
         gr_cfg = self.config.get("generate_report", {})
         if gr_cfg.get("model_full"):
@@ -324,10 +341,19 @@ class GenerateReportTab(QWidget):
             self.txt_tester.setText(gr_cfg["tester_name"])
         if gr_cfg.get("raw_path"):
             self.txt_raw_path.setText(gr_cfg["raw_path"])
+        if gr_cfg.get("report_generator_script"):
+            self.txt_generator_path.setText(gr_cfg["report_generator_script"])
+        elif gr_cfg.get("report_generator_path"):
+            self.txt_generator_path.setText(gr_cfg["report_generator_path"])
         if gr_cfg.get("prev_summary_path"):
             self.txt_prev_summary.setText(gr_cfg["prev_summary_path"])
+
+        # Auto sync paths unless explicitly customized in config
         if gr_cfg.get("aptra_path"):
             self.txt_aptra_path.setText(gr_cfg["aptra_path"])
+        else:
+            self._sync_derived_paths()
+
         if gr_cfg.get("googleqa_dest_path"):
             self.txt_googleqa_dest.setText(gr_cfg["googleqa_dest_path"])
         if "auto_upload_heavy_archives" in gr_cfg:
@@ -349,12 +375,12 @@ class GenerateReportTab(QWidget):
             "aptra_path": self.txt_aptra_path.text().strip(),
             "googleqa_dest_path": self.txt_googleqa_dest.text().strip(),
             "auto_upload_heavy_archives": self.chk_auto_upload_heavy.isChecked(),
-            "report_generator_script": self.config.get("generate_report", {}).get(
-                "report_generator_script",
-                "/home/lge/Environment/tools/GenerReport_Update_0623/ReportGenerator.py"
-            ),
+            "report_generator_script": self.txt_generator_path.text().strip(),
             "aptra_server": self.config.get("generate_report", {}).get("aptra_server", {
                 "host": "loghub.lge.com", "port": 22, "username": "aptra", "password": "aptra"
+            }),
+            "aptra_exec_server": self.config.get("generate_report", {}).get("aptra_exec_server", {
+                "host": "10.157.116.185", "port": 22, "username": "googleqa", "password": "googleqa"
             }),
             "googleqa_server": self.config.get("generate_report", {}).get("googleqa_server", {
                 "host": "loghub.lge.com", "port": 22, "username": "googleqa", "password": "googleqa"

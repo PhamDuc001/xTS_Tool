@@ -68,7 +68,7 @@ SUITE_MATCH_PRIORITY = [
 STEP_TITLES = [
     "1. Chạy ReportGenerator",
     "2. Đồng bộ dữ liệu phân tích sang APTRA",
-    "3. Xác nhận phân tích trên APTRA",
+    "3. Phân tích kết quả trên APTRA (Tự động)",
     "4. Tải file kết quả về Local Windows",
     "5. Chuẩn hóa các file Excel con (03.*.xlsx)",
     "6. Tạo & Cập nhật file Summary",
@@ -128,7 +128,7 @@ class GenerateReportWorker(QThread):
         step_methods = [
             self._step1_run_report_generator,
             self._step2_sync_to_aptra,
-            self._step3_wait_aptra_confirmation,
+            self._step3_run_aptra_analysis,
             self._step4_download_to_local,
             self._step5_format_single_suites,
             self._step6_update_summary_workbook,
@@ -218,6 +218,14 @@ class GenerateReportWorker(QThread):
             os.path.abspath(os.path.join(tool_root, "temp_report", sw_version))
         )
 
+        gen_input = self.params.get("report_generator_script", "").strip()
+        if not gen_input:
+            gen_input = "/home/lge/GoogleQA/00.NISSAN_PZ1D/00.REPORT/GenerReport_Update_0702/"
+        if gen_input.endswith(".py"):
+            generator_script = gen_input
+        else:
+            generator_script = f"{gen_input.rstrip('/')}/ReportGenerator.py"
+
         return {
             "raw_path": raw_path,
             "raw_parent": raw_parent,
@@ -234,7 +242,7 @@ class GenerateReportWorker(QThread):
             "test_end_date": self.params.get("test_end_date", "").strip(),
             "tester_name": self.params.get("tester_name", "").strip(),
             "prev_summary_path": self.params.get("prev_summary_path", "").strip(),
-            "generator_script": self.params.get("report_generator_script", "/home/lge/Environment/tools/GenerReport_Update_0623/ReportGenerator.py").strip(),
+            "generator_script": generator_script,
             "local_work_dir": local_work_dir,
             "local_raw_dir": os.path.join(local_work_dir, "raw_excel"),
             "local_final_dir": os.path.join(local_work_dir, "final_reports"),
@@ -432,37 +440,156 @@ echo "SYNC_APTRA_COMPLETE"
         return True, f"Đã đồng bộ thành công dữ liệu phân tích sang APTRA ({dest_aptra})"
 
     # -------------------------------------------------------------------------
-    # Step 3: Wait for User Confirmation on APTRA Analysis
+    # Step 3: Run APTRA Analysis via SSH on Execution Server (with Web Fallback)
     # -------------------------------------------------------------------------
-    def _step3_wait_aptra_confirmation(self) -> Tuple[bool, str]:
+    def _step3_run_aptra_analysis(self) -> Tuple[bool, str]:
         p = self._get_paths()
-        prompt_msg = (
-            f"Dữ liệu kiểm thử đã được upload thành công sang Server APTRA:\n"
-            f"{p['aptra_path']}/\n\n"
-            "Vui lòng request kích hoạt chạy công cụ phân tích trên APTRA.\n"
-            "Sau khi server APTRA hoàn tất xử lý (sinh các file *Result.xlsx), "
-            "hãy nhấn nút [ĐÃ CHẠY XONG - TIẾP TỤC] bên dưới để tiếp tục quy trình."
+        model_full = p["model_full"]
+        sw_version = p["sw_version"]
+
+        if not model_full or not sw_version:
+            return False, f"Thiếu thông tin Model ({model_full}) hoặc SW Version ({sw_version})."
+
+        # Pre-check: Verify data directory exists in APTRA Storage (/nas/APTRA/{model_full}/{sw_version})
+        remote_dir = p["aptra_path"]
+        self.log(f"Kiểm tra thư mục dữ liệu đầu vào trên storage APTRA ({remote_dir})...", "INFO")
+        aptra_cfg = self.params.get("aptra_server", {})
+        chk_host = aptra_cfg.get("host", "loghub.lge.com")
+        chk_port = aptra_cfg.get("port", 22)
+        chk_user = aptra_cfg.get("username", "aptra")
+        chk_pass = aptra_cfg.get("password", "aptra")
+
+        try:
+            c_chk, sftp_chk = self._open_sftp_connection(chk_host, chk_port, chk_user, chk_pass)
+            try:
+                sftp_chk.stat(remote_dir)
+                existing_items = sftp_chk.listdir(remote_dir)
+            except Exception:
+                existing_items = None
+            sftp_chk.close()
+            c_chk.close()
+
+            if existing_items is None:
+                err = f"Thư mục dữ liệu kiểm thử chưa tồn tại trên APTRA Storage ({remote_dir})."
+                self.log(f"[ERROR] {err}", "ERROR")
+                self.log("[HINT] Vui lòng chạy Bước 2 (Đồng bộ dữ liệu sang APTRA) trước khi kích hoạt phân tích!", "WARN")
+                return False, f"{err} Vui lòng chạy Bước 2 trước."
+
+            results_dirs = [it for it in existing_items if "Result" in it or "Results" in it]
+            if not results_dirs:
+                self.log(f"[WARN] Thư mục {remote_dir} hiện chưa có thư mục con *Results nào! Script APTRA có thể thiếu dữ liệu.", "WARN")
+            else:
+                self.log(f"Dữ liệu đầu vào đã sẵn sàng trên APTRA ({len(results_dirs)} thư mục *Results).", "SUCCESS")
+        except Exception as e:
+            self.log(f"[WARN] Không thể kiểm tra trước thư mục storage APTRA ({e}). Tiếp tục thử kích hoạt qua SSH...", "WARN")
+
+        exec_cfg = self.params.get("aptra_exec_server", {})
+        exec_host = exec_cfg.get("host", "10.157.116.185")
+        exec_port = exec_cfg.get("port", 22)
+        exec_user = exec_cfg.get("username", "googleqa")
+        exec_pass = exec_cfg.get("password", "googleqa")
+
+        cmd = (
+            f"bash -c 'cd /home/googleqa/aptra && "
+            f". .aptra_venv/bin/activate && "
+            f"python3 new_googleQA_test_result.py \"{model_full}\" \"{sw_version}\"'"
         )
 
-        self.log("\n[INTERACTION] Hiển thị hộp thoại chờ xác nhận hoàn tất chạy trên APTRA...", "WARN")
-        self._aptra_confirm_event.clear()
-        self._aptra_confirmed = False
-        self.request_aptra_confirm_signal.emit(prompt_msg)
+        self.log(f"Kích hoạt phân tích tự động trên server APTRA qua SSH ({exec_host}:{exec_port})...", "INFO")
+        self.log(f"Lệnh thực thi: {cmd}", "INFO")
 
-        # Wait for user click in GUI
-        self._aptra_confirm_event.wait()
+        ssh_success = False
+        ssh_err_msg = ""
 
-        if self._abort_requested or not self._aptra_confirmed:
-            return False, "Người dùng đã hủy bỏ xác nhận phân tích APTRA."
+        try:
+            client = paramiko.SSHClient()
+            client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            client.connect(exec_host, port=exec_port, username=exec_user, password=exec_pass, timeout=15)
+
+            transport = client.get_transport()
+            channel = transport.open_session()
+            channel.get_pty()
+            channel.exec_command(cmd)
+
+            # Stream output in real time
+            while True:
+                if self._abort_requested:
+                    self.log("[WARN] Người dùng hủy bỏ tiến trình khi APTRA đang phân tích.", "WARN")
+                    try:
+                        channel.close()
+                        client.close()
+                    except Exception:
+                        pass
+                    return False, "Tiến trình bị hủy bởi người dùng."
+
+                if channel.recv_ready():
+                    chunk = channel.recv(4096).decode("utf-8", "ignore")
+                    if chunk:
+                        self.log(chunk, "STREAM")
+
+                if channel.recv_stderr_ready():
+                    chunk_err = channel.recv_stderr(4096).decode("utf-8", "ignore")
+                    if chunk_err:
+                        self.log(chunk_err, "STREAM")
+
+                if channel.exit_status_ready():
+                    # Drain remaining buffer
+                    while channel.recv_ready():
+                        chunk = channel.recv(4096).decode("utf-8", "ignore")
+                        if chunk:
+                            self.log(chunk, "STREAM")
+                    while channel.recv_stderr_ready():
+                        chunk_err = channel.recv_stderr(4096).decode("utf-8", "ignore")
+                        if chunk_err:
+                            self.log(chunk_err, "STREAM")
+                    break
+
+                time.sleep(0.1)
+
+            exit_code = channel.recv_exit_status()
+            channel.close()
+            client.close()
+
+            if exit_code == 0:
+                self.log("Script new_googleQA_test_result.py trên server APTRA đã thực thi thành công.", "SUCCESS")
+                ssh_success = True
+            else:
+                ssh_err_msg = f"Script trên APTRA kết thúc với mã lỗi: {exit_code}"
+                self.log(f"[ERROR] {ssh_err_msg}", "ERROR")
+
+        except Exception as e:
+            ssh_err_msg = f"Không thể kết nối SSH hoặc thực thi trên server APTRA ({exec_host}): {str(e)}"
+            self.log(f"[ERROR] {ssh_err_msg}", "ERROR")
+
+        # Fallback to interactive dialog if SSH execution failed
+        if not ssh_success:
+            self.log("\n[FALLBACK] Kích hoạt phân tích SSH thất bại. Chuyển sang chế độ xác nhận thủ công qua Web...", "WARN")
+            prompt_msg = (
+                f"Kích hoạt phân tích tự động qua SSH gặp lỗi:\n{ssh_err_msg}\n\n"
+                f"Vui lòng truy cập Web APTRA để chạy thủ công:\n"
+                f"👉 http://aptra.lge.com:8080/job/1.%20xTS%20Result%20Report/\n\n"
+                f"Tham số cần chọn:\n"
+                f"- PROJECT_NAME: {model_full}\n"
+                f"- SW_Release: {sw_version}\n\n"
+                "Sau khi chạy xong, nhấn nút [ĐÃ CHẠY XONG - TIẾP TỤC] bên dưới."
+            )
+            self._aptra_confirm_event.clear()
+            self._aptra_confirmed = False
+            self.request_aptra_confirm_signal.emit(prompt_msg)
+            self._aptra_confirm_event.wait()
+
+            if self._abort_requested or not self._aptra_confirmed:
+                return False, f"Phân tích APTRA thất bại ({ssh_err_msg}) và người dùng đã hủy bỏ xác nhận."
 
         # Quick validation on APTRA server via SFTP
-        self.log("Đang kiểm tra kết quả phân tích trên APTRA...", "INFO")
+        self.log("Đang kiểm tra kết quả phân tích trên storage APTRA...", "INFO")
         aptra_cfg = self.params.get("aptra_server", {})
         host = aptra_cfg.get("host", "loghub.lge.com")
         port = aptra_cfg.get("port", 22)
         user = aptra_cfg.get("username", "aptra")
         password = aptra_cfg.get("password", "aptra")
 
+        excel_files = []
         try:
             client, sftp = self._open_sftp_connection(host, port, user, password)
             remote_dir = p["aptra_path"]
@@ -475,13 +602,15 @@ echo "SYNC_APTRA_COMPLETE"
             self.log(f"Tìm thấy {len(excel_files)} file Excel kết quả và {len(csv_files)} file CSV trên APTRA.", "SUCCESS" if excel_files else "WARN")
             if not excel_files:
                 self.log(f"[ERROR] Không tìm thấy file *Result.xlsx nào trên APTRA ({remote_dir})!", "ERROR")
-                return False, f"Server APTRA ({remote_dir}) chưa sinh file kết quả *Result.xlsx. Vui lòng đợi APTRA hoàn tất phân tích rồi chạy lại bước này."
+                return False, f"Server APTRA ({remote_dir}) chưa sinh file kết quả *Result.xlsx. Vui lòng kiểm tra lại."
             
             self.log(f"Danh sách file Excel trên APTRA ({len(excel_files)} file): {', '.join(sorted(excel_files))}", "INFO")
         except Exception as e:
-            self.log(f"[WARN] Không thể kiểm tra trực tiếp APTRA: {e}", "WARN")
+            self.log(f"[WARN] Không thể kiểm tra trực tiếp storage APTRA: {e}", "WARN")
 
-        return True, f"Xác nhận hoàn tất phân tích APTRA (tìm thấy {len(excel_files)} file Excel)."
+        return True, f"Phân tích APTRA hoàn tất thành công ({len(excel_files)} file Excel sẵn sàng)."
+
+    _step3_wait_aptra_confirmation = _step3_run_aptra_analysis
 
     # -------------------------------------------------------------------------
     # Step 4: Download lightweight result files to Local Windows
