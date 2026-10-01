@@ -50,11 +50,16 @@ def find_effective_report_dir(test_root):
     r_dir = os.path.join(test_root, "Report")
     if not os.path.exists(r_dir):
         return r_dir
+    candidate_wrappers = []
     for item in os.listdir(r_dir):
         p = os.path.join(r_dir, item)
         if os.path.isdir(p) and re.match(r"^\d+\.", item):
+            if any(kw in item.lower() for kw in ["testcase", "multiple", "androidtest"]):
+                continue
             if os.path.exists(os.path.join(p, "single")) or os.path.exists(os.path.join(p, "results")):
-                return p
+                candidate_wrappers.append(p)
+    if len(candidate_wrappers) == 1:
+        return candidate_wrappers[0]
     return r_dir
 
 def parse_session(dir_path):
@@ -277,14 +282,20 @@ def scan_and_analyze(test_root):
     single_target_map = {}
     for mod_name, s_list in single_sessions.items():
         matched = match_module_folder(all_known_folders, mod_name)
+        mod_has_pass = any(s.get("is_pass") for s in s_list)
         if matched:
-            single_target_map[mod_name] = f"single/{matched}" if all_known_folders[matched]["loc"] == "single" else matched
+            loc = all_known_folders[matched]["loc"]
+            single_target_map[mod_name] = f"single/{matched}" if loc == "single" else matched
         else:
             next_id += 1
             suffix = "_multi" if mod_name in failed_in_multiple else ""
             new_folder = f"{next_id:02d}.{mod_name}{suffix}"
-            single_target_map[mod_name] = f"single/{new_folder}"
-            all_known_folders[new_folder] = {"loc": "single", "path": os.path.join(single_dir, new_folder)}
+            if mod_has_pass:
+                single_target_map[mod_name] = f"single/{new_folder}"
+                all_known_folders[new_folder] = {"loc": "single", "path": os.path.join(single_dir, new_folder)}
+            else:
+                single_target_map[mod_name] = new_folder
+                all_known_folders[new_folder] = {"loc": "root", "path": os.path.join(report_dir, new_folder)}
 
     tc_target_map = {}
     for (mod_name, tc_name), s_list in tc_sessions.items():
@@ -341,8 +352,15 @@ def scan_and_analyze(test_root):
             k = s["module_name"]
             target_folder = single_target_map.get(s["module_name"], "[Chưa xác định]")
             f_clean = target_folder.replace("single/", "")
-            dest_res = os.path.join(single_dir, f_clean, "results", ts)
-            dest_log = os.path.join(single_dir, f_clean, "logs", ts)
+            mod_has_pass = any(sess.get("is_pass") for sess in single_sessions.get(s["module_name"], []))
+            if mod_has_pass:
+                dest_res = os.path.join(single_dir, f_clean, "results", ts)
+                dest_log = os.path.join(single_dir, f_clean, "logs", ts)
+            else:
+                if not target_folder.endswith("(Root)"):
+                    target_folder = f"{f_clean} (Root)"
+                dest_res = os.path.join(report_dir, f_clean, "results", ts)
+                dest_log = os.path.join(report_dir, f_clean, "logs", ts)
 
         has_res = os.path.exists(dest_res)
         has_log = os.path.exists(dest_log)
@@ -420,11 +438,16 @@ def find_effective_report_dir(test_root):
     r_dir = os.path.join(test_root, "Report")
     if not os.path.exists(r_dir):
         return r_dir
+    candidate_wrappers = []
     for item in os.listdir(r_dir):
         p = os.path.join(r_dir, item)
         if os.path.isdir(p) and re.match(r"^\d+\.", item):
+            if any(kw in item.lower() for kw in ["testcase", "multiple", "androidtest"]):
+                continue
             if os.path.exists(os.path.join(p, "single")) or os.path.exists(os.path.join(p, "results")):
-                return p
+                candidate_wrappers.append(p)
+    if len(candidate_wrappers) == 1:
+        return candidate_wrappers[0]
     return r_dir
 
 def parse_session(dir_path):
@@ -605,6 +628,18 @@ def copy_session(src_res_dir, src_logs_dir, dst_res_dir, dst_logs_dir, ts):
 
     return copied
 
+def folder_has_pass_result(folder_path):
+    res_dir = os.path.join(folder_path, "results")
+    if not os.path.exists(res_dir):
+        return False
+    for item in os.listdir(res_dir):
+        sub_res = os.path.join(res_dir, item)
+        if os.path.isdir(sub_res):
+            parsed = parse_session(sub_res)
+            if parsed and parsed.get("is_pass"):
+                return True
+    return False
+
 def execute_organize(test_root):
     results_dir = os.path.join(test_root, "results")
     logs_dir = os.path.join(test_root, "logs")
@@ -683,9 +718,10 @@ def execute_organize(test_root):
         for s in selected_multi:
             copy_session(results_dir, logs_dir, dest_res, dest_log, s["timestamp"])
 
-    log("\n[BƯỚC 3] Thu thập Single Modules vào Report/single/...")
+    log("\n[BƯỚC 3] Thu thập Single Modules vào Report/...")
     for mod_name, s_list in single_sessions.items():
         matched = match_module_folder(all_known_folders, mod_name)
+        mod_has_pass = any(s.get("is_pass") for s in s_list)
         if matched:
             target_fol_name = matched
             target_base = all_known_folders[matched]["path"]
@@ -693,14 +729,19 @@ def execute_organize(test_root):
             next_id += 1
             suffix = "_multi" if mod_name in failed_in_multiple else ""
             target_fol_name = f"{next_id:02d}.{mod_name}{suffix}"
-            target_base = os.path.join(single_dir, target_fol_name)
-            all_known_folders[target_fol_name] = {"loc": "single", "path": target_base}
+            if mod_has_pass:
+                target_base = os.path.join(single_dir, target_fol_name)
+                all_known_folders[target_fol_name] = {"loc": "single", "path": target_base}
+            else:
+                target_base = os.path.join(report_dir, target_fol_name)
+                all_known_folders[target_fol_name] = {"loc": "root", "path": target_base}
 
         dest_res = os.path.join(target_base, "results")
         dest_log = os.path.join(target_base, "logs")
 
         selected_s = select_history_sessions(s_list)
-        log(f"-> Module '{mod_name}' -> Thư mục: {target_fol_name} ({len(s_list)} sessions -> Giữ {len(selected_s)}):")
+        loc_str = "single/" if mod_has_pass else "Report/ (Root)"
+        log(f"-> Module '{mod_name}' (Pass: {mod_has_pass}) -> Thư mục: {loc_str}{target_fol_name} ({len(s_list)} sessions -> Giữ {len(selected_s)}):")
         for s in selected_s:
             copy_session(results_dir, logs_dir, dest_res, dest_log, s["timestamp"])
 
@@ -764,28 +805,55 @@ def execute_organize(test_root):
         except Exception:
             pass
 
+    # 1. Quét các module ở root: nếu ĐÃ PASS -> move vào single/
     if os.path.exists(report_dir):
-        for item in os.listdir(report_dir):
+        for item in list(os.listdir(report_dir)):
             if item in ["results", "logs", "single"]:
                 continue
             item_path = os.path.join(report_dir, item)
             if os.path.isdir(item_path) and re.match(r"^\d+\.", item):
-                dest_in_single = os.path.join(single_dir, item)
-                log(f"-> Di chuyển '{item}' từ root vào Report/single/{item}")
-                if os.path.exists(dest_in_single):
-                    for sub in ["results", "logs"]:
-                        s_sub = os.path.join(item_path, sub)
-                        d_sub = os.path.join(dest_in_single, sub)
-                        os.makedirs(d_sub, exist_ok=True)
-                        if os.path.exists(s_sub):
-                            for sub_item in os.listdir(s_sub):
-                                s_file = os.path.join(s_sub, sub_item)
-                                d_file = os.path.join(d_sub, sub_item)
-                                if not os.path.exists(d_file):
-                                    shutil.move(s_file, d_file)
-                    shutil.rmtree(item_path, ignore_errors=True)
+                if folder_has_pass_result(item_path):
+                    dest_in_single = os.path.join(single_dir, item)
+                    log(f"-> Module '{item}' ĐÃ PASS: Di chuyển từ root vào Report/single/{item}")
+                    if os.path.exists(dest_in_single):
+                        for sub in ["results", "logs"]:
+                            s_sub = os.path.join(item_path, sub)
+                            d_sub = os.path.join(dest_in_single, sub)
+                            os.makedirs(d_sub, exist_ok=True)
+                            if os.path.exists(s_sub):
+                                for sub_item in os.listdir(s_sub):
+                                    s_file = os.path.join(s_sub, sub_item)
+                                    d_file = os.path.join(d_sub, sub_item)
+                                    if not os.path.exists(d_file):
+                                        shutil.move(s_file, d_file)
+                        shutil.rmtree(item_path, ignore_errors=True)
+                    else:
+                        shutil.move(item_path, dest_in_single)
                 else:
-                    shutil.move(item_path, dest_in_single)
+                    log(f"-> Module '{item}' CHƯA PASS: Giữ nguyên ở ngoài root Report/{item}")
+
+    # 2. Quét các module đang trong single/: nếu CHƯA PASS -> move ra ngoài root Report/
+    if os.path.exists(single_dir):
+        for item in list(os.listdir(single_dir)):
+            item_path = os.path.join(single_dir, item)
+            if os.path.isdir(item_path) and re.match(r"^\d+\.", item):
+                if not folder_has_pass_result(item_path):
+                    dest_in_root = os.path.join(report_dir, item)
+                    log(f"-> Module '{item}' CHƯA PASS: Di chuyển từ single/ ra ngoài root Report/{item}")
+                    if os.path.exists(dest_in_root):
+                        for sub in ["results", "logs"]:
+                            s_sub = os.path.join(item_path, sub)
+                            d_sub = os.path.join(dest_in_root, sub)
+                            os.makedirs(d_sub, exist_ok=True)
+                            if os.path.exists(s_sub):
+                                for sub_item in os.listdir(s_sub):
+                                    s_file = os.path.join(s_sub, sub_item)
+                                    d_file = os.path.join(d_sub, sub_item)
+                                    if not os.path.exists(d_file):
+                                        shutil.move(s_file, d_file)
+                        shutil.rmtree(item_path, ignore_errors=True)
+                    else:
+                        shutil.move(item_path, dest_in_root)
 
     log("\n🎉 HOÀN TẤT THU THẬP VÀ TỔ CHỨC BÁO CÁO REPORT THÀNH CÔNG! 🎉")
     return True

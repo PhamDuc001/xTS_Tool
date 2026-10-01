@@ -15,7 +15,7 @@ Run: ./MTC_PZ1D_26MY.sh
 Run: ./ChangeLanguage.sh {serial}
 
 4. Flash user
-cd /home/lge/Environment/Storage/Binary/AIVI2_N_FULL.YAK.31.03.30.U0M.sit.user/RELEASE_8155_UOS_2026-09-04_07_11_BDV_PROD/
+cd /home/lge/Environment/Storage/Binary/AIVI2_N_FULL.YAK.31.04.30.U0M.sit.user/RELEASE_8155_UOS_2026-09-30_06_26_BDV_PROD/
 adb reboot bootloader
 fastboot devices
 ./fastboot_n_fullnavi_reflash.sh
@@ -23,7 +23,7 @@ fastboot reboot
 
 5. Inform Authentication by manual to user
 6. After user confirm authen successful, GSI setting
-cd /home/lge/Environment/Storage/Binary/AIVI2_N_FULL.YAK.31.03.30.U0M.sit.user/RELEASE_8155_UOS_2026-09-04_07_11_BDV_PROD/
+cd /home/lge/Environment/Storage/Binary/AIVI2_N_FULL.YAK.31.04.30.U0M.sit.user/RELEASE_8155_UOS_2026-09-30_06_26_BDV_PROD/
 adb reboot bootloader
 fastboot devices  
 fastboot flash boot_a boot-debug.img
