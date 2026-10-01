@@ -164,10 +164,49 @@ def parse_session(dir_path):
         "cmd": cmd_args
     }
 
+def get_passed_modules_from_session(session_dir):
+    passed_mods = set()
+    for fname in ["test_result_failures_suite.html", "test_result.html"]:
+        html_p = os.path.join(session_dir, fname)
+        if os.path.exists(html_p):
+            try:
+                with open(html_p, "r", errors="ignore") as f:
+                    c = f.read()
+                idx = c.find('testsummary')
+                if idx != -1:
+                    end_idx = c.find('</table>', idx)
+                    table_content = c[idx:end_idx] if end_idx != -1 else c[idx:idx+500000]
+                    rows = re.findall(r'<tr>(.*?)</tr>', table_content, re.DOTALL)
+                    for r in rows:
+                        tds = re.findall(r'<td[^>]*>(.*?)</td>', r, re.DOTALL)
+                        if len(tds) >= 8:
+                            clean_tds = [re.sub(r'<[^>]+>', '', td).replace('&nbsp;', ' ').strip() for td in tds]
+                            parts = clean_tds[0].split()
+                            m_name = parts[1] if len(parts) >= 2 and any(a in parts[0].lower() for a in ["arm", "x86", "mips"]) else parts[0]
+                            try:
+                                p_cnt = int(clean_tds[1])
+                                f_cnt = int(clean_tds[2])
+                                is_done = (clean_tds[7].lower() == "true")
+                                if is_done and f_cnt == 0 and p_cnt > 0:
+                                    passed_mods.add(m_name)
+                            except Exception:
+                                pass
+                    break
+            except Exception:
+                pass
+    return passed_mods
+
 def select_history_sessions(sessions):
-    if len(sessions) < 5:
-        return sessions
-    return [sessions[0], sessions[1], sessions[-2], sessions[-1]]
+    pass_indices = [i for i, s in enumerate(sessions) if s.get("is_pass")]
+    if pass_indices:
+        latest_pass_idx = pass_indices[-1]
+        valid_sessions = sessions[:latest_pass_idx + 1]
+    else:
+        valid_sessions = sessions
+
+    if len(valid_sessions) < 5:
+        return valid_sessions
+    return [valid_sessions[0], valid_sessions[1], valid_sessions[-2], valid_sessions[-1]]
 
 def get_max_existing_id(report_dir):
     single_dir = os.path.join(report_dir, "single")
@@ -242,6 +281,11 @@ def scan_and_analyze(test_root):
     single_sessions = defaultdict(list)
     tc_sessions = defaultdict(list)
 
+    passed_in_latest_multi = set()
+    if multi_sessions:
+        latest_multi_dir = os.path.join(results_dir, multi_sessions[-1]["timestamp"])
+        passed_in_latest_multi = get_passed_modules_from_session(latest_multi_dir)
+
     failed_in_multiple = set()
     for s in multi_sessions:
         xml_p = os.path.join(results_dir, s["timestamp"], "test_result.xml")
@@ -281,6 +325,8 @@ def scan_and_analyze(test_root):
 
     single_target_map = {}
     for mod_name, s_list in single_sessions.items():
+        if mod_name in passed_in_latest_multi:
+            continue
         matched = match_module_folder(all_known_folders, mod_name)
         mod_has_pass = any(s.get("is_pass") for s in s_list)
         if matched:
@@ -312,6 +358,8 @@ def scan_and_analyze(test_root):
     for s in select_history_sessions(multi_sessions):
         pruned_selection.add(s["timestamp"])
     for mod_name, s_list in single_sessions.items():
+        if mod_name in passed_in_latest_multi:
+            continue
         for s in select_history_sessions(s_list):
             pruned_selection.add(s["timestamp"])
     for (mod_name, tc_name), s_list in tc_sessions.items():
@@ -327,6 +375,8 @@ def scan_and_analyze(test_root):
             elif s["type"] == "testcase":
                 k = f"TESTCASE:{s['module_name']}#{s['testcase_name']}"
             else:
+                if s["module_name"] in passed_in_latest_multi:
+                    continue
                 k = s["module_name"]
             if k not in latest_pass_map or s["timestamp"] > latest_pass_map[k]["timestamp"]:
                 latest_pass_map[k] = s
@@ -350,44 +400,54 @@ def scan_and_analyze(test_root):
             dest_log = os.path.join(single_dir, f_clean, "logs", ts)
         else:
             k = s["module_name"]
-            target_folder = single_target_map.get(s["module_name"], "[Chưa xác định]")
-            f_clean = target_folder.replace("single/", "")
-            mod_has_pass = any(sess.get("is_pass") for sess in single_sessions.get(s["module_name"], []))
-            if mod_has_pass:
-                dest_res = os.path.join(single_dir, f_clean, "results", ts)
-                dest_log = os.path.join(single_dir, f_clean, "logs", ts)
+            if s["module_name"] in passed_in_latest_multi:
+                target_folder = "[Đã Pass trong Multiple]"
+                dest_res = ""
+                dest_log = ""
             else:
-                if not target_folder.endswith("(Root)"):
-                    target_folder = f"{f_clean} (Root)"
-                dest_res = os.path.join(report_dir, f_clean, "results", ts)
-                dest_log = os.path.join(report_dir, f_clean, "logs", ts)
+                target_folder = single_target_map.get(s["module_name"], "[Chưa xác định]")
+                f_clean = target_folder.replace("single/", "")
+                mod_has_pass = any(sess.get("is_pass") for sess in single_sessions.get(s["module_name"], []))
+                if mod_has_pass:
+                    dest_res = os.path.join(single_dir, f_clean, "results", ts)
+                    dest_log = os.path.join(single_dir, f_clean, "logs", ts)
+                else:
+                    if not target_folder.endswith("(Root)"):
+                        target_folder = f"{f_clean} (Root)"
+                    dest_res = os.path.join(report_dir, f_clean, "results", ts)
+                    dest_log = os.path.join(report_dir, f_clean, "logs", ts)
 
-        has_res = os.path.exists(dest_res)
-        has_log = os.path.exists(dest_log)
+        has_res = bool(dest_res and os.path.exists(dest_res))
+        has_log = bool(dest_log and os.path.exists(dest_log))
         already_copied = (has_res and has_log)
 
-        if has_res and has_log:
-            copy_status = "COPIED_FULL"
-        elif has_res and not has_log:
-            copy_status = "MISSING_LOG"
-        elif not has_res and has_log:
-            copy_status = "MISSING_RES"
+        if s["module_name"] in passed_in_latest_multi and stype == "single":
+            copy_status = "SUPERSEDED_BY_MULTI"
+            is_latest_pass = False
+            status_tag = "PASSED_IN_MULTI"
         else:
-            if is_selected:
-                copy_status = "WILL_COPY"
-            elif not s["is_pass"] and stype == "testcase":
-                copy_status = "NOT_COPIED"
+            if has_res and has_log:
+                copy_status = "COPIED_FULL"
+            elif has_res and not has_log:
+                copy_status = "MISSING_LOG"
+            elif not has_res and has_log:
+                copy_status = "MISSING_RES"
             else:
-                copy_status = "PRUNED_SKIP"
+                if is_selected:
+                    copy_status = "WILL_COPY"
+                elif not s["is_pass"] and stype == "testcase":
+                    copy_status = "NOT_COPIED"
+                else:
+                    copy_status = "PRUNED_SKIP"
 
-        is_latest_pass = (s["is_pass"] and latest_pass_map.get(k, {}).get("timestamp") == ts)
-        if stype == "testcase":
-            status_tag = "TESTCASE_PASS" if s["is_pass"] else "FAIL"
-        else:
-            if s["is_pass"]:
-                status_tag = "LATEST_PASS" if is_latest_pass else "OUTDATED_PASS"
+            is_latest_pass = (s["is_pass"] and latest_pass_map.get(k, {}).get("timestamp") == ts)
+            if stype == "testcase":
+                status_tag = "TESTCASE_PASS" if s["is_pass"] else "FAIL"
             else:
-                status_tag = "FAIL"
+                if s["is_pass"]:
+                    status_tag = "LATEST_PASS" if is_latest_pass else "OUTDATED_PASS"
+                else:
+                    status_tag = "FAIL"
 
         analyzed_sessions.append({
             "timestamp": ts,
@@ -546,10 +606,49 @@ def parse_session(dir_path):
         "cmd": cmd_args
     }
 
+def get_passed_modules_from_session(session_dir):
+    passed_mods = set()
+    for fname in ["test_result_failures_suite.html", "test_result.html"]:
+        html_p = os.path.join(session_dir, fname)
+        if os.path.exists(html_p):
+            try:
+                with open(html_p, "r", errors="ignore") as f:
+                    c = f.read()
+                idx = c.find('testsummary')
+                if idx != -1:
+                    end_idx = c.find('</table>', idx)
+                    table_content = c[idx:end_idx] if end_idx != -1 else c[idx:idx+500000]
+                    rows = re.findall(r'<tr>(.*?)</tr>', table_content, re.DOTALL)
+                    for r in rows:
+                        tds = re.findall(r'<td[^>]*>(.*?)</td>', r, re.DOTALL)
+                        if len(tds) >= 8:
+                            clean_tds = [re.sub(r'<[^>]+>', '', td).replace('&nbsp;', ' ').strip() for td in tds]
+                            parts = clean_tds[0].split()
+                            m_name = parts[1] if len(parts) >= 2 and any(a in parts[0].lower() for a in ["arm", "x86", "mips"]) else parts[0]
+                            try:
+                                p_cnt = int(clean_tds[1])
+                                f_cnt = int(clean_tds[2])
+                                is_done = (clean_tds[7].lower() == "true")
+                                if is_done and f_cnt == 0 and p_cnt > 0:
+                                    passed_mods.add(m_name)
+                            except Exception:
+                                pass
+                    break
+            except Exception:
+                pass
+    return passed_mods
+
 def select_history_sessions(sessions):
-    if len(sessions) < 5:
-        return sessions
-    return [sessions[0], sessions[1], sessions[-2], sessions[-1]]
+    pass_indices = [i for i, s in enumerate(sessions) if s.get("is_pass")]
+    if pass_indices:
+        latest_pass_idx = pass_indices[-1]
+        valid_sessions = sessions[:latest_pass_idx + 1]
+    else:
+        valid_sessions = sessions
+
+    if len(valid_sessions) < 5:
+        return valid_sessions
+    return [valid_sessions[0], valid_sessions[1], valid_sessions[-2], valid_sessions[-1]]
 
 def get_max_existing_id(report_dir):
     single_dir = os.path.join(report_dir, "single")
@@ -670,6 +769,12 @@ def execute_organize(test_root):
     single_sessions = defaultdict(list)
     tc_sessions = defaultdict(list)
 
+    passed_in_latest_multi = set()
+    if multi_sessions:
+        latest_multi_dir = os.path.join(results_dir, multi_sessions[-1]["timestamp"])
+        passed_in_latest_multi = get_passed_modules_from_session(latest_multi_dir)
+        log(f"-> Session Multiple mới nhất ({multi_sessions[-1]['timestamp']}) đã Pass {len(passed_in_latest_multi)} modules.")
+
     failed_in_multiple = set()
     for s in multi_sessions:
         xml_p = os.path.join(results_dir, s["timestamp"], "test_result.xml")
@@ -720,6 +825,10 @@ def execute_organize(test_root):
 
     log("\n[BƯỚC 3] Thu thập Single Modules vào Report/...")
     for mod_name, s_list in single_sessions.items():
+        if mod_name in passed_in_latest_multi:
+            log(f"-> Module '{mod_name}' ĐÃ PASS trong session Multiple mới nhất -> Bỏ qua tạo thư mục single riêng biệt.")
+            continue
+
         matched = match_module_folder(all_known_folders, mod_name)
         mod_has_pass = any(s.get("is_pass") for s in s_list)
         if matched:
@@ -740,6 +849,26 @@ def execute_organize(test_root):
         dest_log = os.path.join(target_base, "logs")
 
         selected_s = select_history_sessions(s_list)
+        selected_ts = {s["timestamp"] for s in selected_s}
+        module_all_ts = {s["timestamp"] for s in s_list}
+        unwanted_ts = module_all_ts - selected_ts
+
+        for bad_ts in unwanted_ts:
+            bad_rf = os.path.join(dest_res, bad_ts)
+            if os.path.exists(bad_rf):
+                shutil.rmtree(bad_rf, ignore_errors=True)
+                log(f"   -> [PRUNE] Xóa session thừa/fail sau pass: {bad_ts} khỏi results")
+            bad_zip = os.path.join(dest_res, bad_ts + ".zip")
+            if os.path.exists(bad_zip):
+                try:
+                    os.remove(bad_zip)
+                except Exception:
+                    pass
+            bad_lf = os.path.join(dest_log, bad_ts)
+            if os.path.exists(bad_lf):
+                shutil.rmtree(bad_lf, ignore_errors=True)
+                log(f"   -> [PRUNE] Xóa session thừa/fail sau pass: {bad_ts} khỏi logs")
+
         loc_str = "single/" if mod_has_pass else "Report/ (Root)"
         log(f"-> Module '{mod_name}' (Pass: {mod_has_pass}) -> Thư mục: {loc_str}{target_fol_name} ({len(s_list)} sessions -> Giữ {len(selected_s)}):")
         for s in selected_s:
@@ -804,6 +933,22 @@ def execute_organize(test_root):
             log(f"-> Đã xóa thư mục '{m_folder}' sau khi chuyển.")
         except Exception:
             pass
+
+    # 0. Dọn dẹp các thư mục single của các module đã pass trong session Multiple mới nhất
+    for target_dir in [report_dir, single_dir]:
+        if not os.path.exists(target_dir):
+            continue
+        for item in list(os.listdir(target_dir)):
+            p = os.path.join(target_dir, item)
+            if not os.path.isdir(p) or item in ["results", "logs", "single"]:
+                continue
+            clean_name = re.sub(r"^\d+\.\s*", "", item).strip()
+            base_name = re.sub(r"_multi$", "", clean_name, flags=re.I).strip()
+            for pm in passed_in_latest_multi:
+                if base_name.lower() == pm.lower() or (pm.lower() in base_name.lower() and len(pm) > 5):
+                    log(f"-> [CLEANUP] Xóa thư mục thừa '{item}' (module '{pm}' đã pass trong Multiple).")
+                    shutil.rmtree(p, ignore_errors=True)
+                    break
 
     # 1. Quét các module ở root: nếu ĐÃ PASS -> move vào single/
     if os.path.exists(report_dir):
