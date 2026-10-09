@@ -16,7 +16,7 @@ class StepDecision:
     ABORT = "ABORT"
 
 
-def build_workflow_steps(suite_name: str, paths: Dict[str, Any]) -> List[Dict[str, Any]]:
+def build_workflow_steps(suite_name: str, paths: Dict[str, Any], arduino_enabled: bool = False) -> List[Dict[str, Any]]:
     """
     Builds the list of steps for the selected test suite.
     Paths dict contains:
@@ -115,13 +115,21 @@ def build_workflow_steps(suite_name: str, paths: Dict[str, Any]) -> List[Dict[st
     })
 
     # Manual Authentication #1
-    steps.append({
-        "id": "manual_auth_1",
-        "title": "5. Xác thực thủ công (Manual Authentication)",
-        "type": "manual_auth",
-        "prompt": "Đã hoàn thành flash User Build.\nVui lòng thực hiện thao tác xác thực trên màn hình thiết bị.\nBấm 'Tiếp tục' sau khi hoàn tất thành công.",
-        "desc": "Yêu cầu người dùng xác thực thủ công trên màn hình xe/device"
-    })
+    if arduino_enabled:
+        steps.append({
+            "id": "arduino_auth_1",
+            "title": "5. Xác thực tự động (Arduino)",
+            "type": "arduino_auth",
+            "desc": "Tự động Bypass RSA & Setup Wizard bằng Arduino"
+        })
+    else:
+        steps.append({
+            "id": "manual_auth_1",
+            "title": "5. Xác thực thủ công (Manual Authentication)",
+            "type": "manual_auth",
+            "prompt": "Đã hoàn thành flash User Build.\nVui lòng thực hiện thao tác xác thực trên màn hình thiết bị.\nBấm 'Tiếp tục' sau khi hoàn tất thành công.",
+            "desc": "Yêu cầu người dùng xác thực thủ công trên màn hình xe/device"
+        })
 
     if "ATS" in suite or "CTS" in suite and "GSI" not in suite:
         # ATS & CTS: Step 6 is Lock bootloader, Step 7 is second manual auth
@@ -132,13 +140,21 @@ def build_workflow_steps(suite_name: str, paths: Dict[str, Any]) -> List[Dict[st
             "wait_for_adb": False,
             "desc": "adb reboot bootloader -> fastboot flashing lock -> reboot (không chờ adb)"
         })
-        steps.append({
-            "id": "manual_auth_2",
-            "title": "7. Xác thực lại thủ công (Post-lock Authentication)",
-            "type": "manual_auth",
-            "prompt": "Đã khóa Bootloader thành công.\nVui lòng thực hiện xác thực thủ công lại trên màn hình thiết bị lần cuối.\nBấm 'Tiếp tục' sau khi hoàn tất thành công.",
-            "desc": "Xác thực lại sau khi bootloader locked"
-        })
+        if arduino_enabled:
+            steps.append({
+                "id": "arduino_auth_2",
+                "title": "7. Xác thực lại tự động (Arduino)",
+                "type": "arduino_auth",
+                "desc": "Tự động Bypass RSA sau khi lock bootloader bằng Arduino"
+            })
+        else:
+            steps.append({
+                "id": "manual_auth_2",
+                "title": "7. Xác thực lại thủ công (Post-lock Authentication)",
+                "type": "manual_auth",
+                "prompt": "Đã khóa Bootloader thành công.\nVui lòng thực hiện xác thực thủ công lại trên màn hình thiết bị lần cuối.\nBấm 'Tiếp tục' sau khi hoàn tất thành công.",
+                "desc": "Xác thực lại sau khi bootloader locked"
+            })
 
     elif "GSI" in suite or "VTS" in suite:
         # GSI / VTS setting:
@@ -187,7 +203,7 @@ class WorkflowWorker(QThread):
 
     def __init__(self, ssh_mgr: SSHManager, steps: List[Dict[str, Any]], 
                  single_step_idx: Optional[int] = None, timeouts: Optional[Dict[str, int]] = None,
-                 server_host: str = "", suite_name: str = ""):
+                 server_host: str = "", suite_name: str = "", arduino_config: Optional[Dict[str, Any]] = None):
         super().__init__()
         self.ssh = ssh_mgr
         self.steps = steps
@@ -202,6 +218,16 @@ class WorkflowWorker(QThread):
             "fastbootd_wait_sec": 45,
             "poll_interval_sec": 3
         }
+
+        # Arduino configuration — follow AutoFlashing devices.setup() logic
+        self.arduino_config = arduino_config or {}
+        self._arduino_enabled = self.arduino_config.get("enabled", False)
+        kb = self.arduino_config.get("kb_signal", "K1")
+        self._kb_signal = kb                          # "K1"  — single click (Enable USB Debug)
+        self._kb_double = kb + kb[1] if kb else ""    # "K11" — double click (Allow Privacy)
+        self._kb_triple = (kb + kb[1] + kb[1]) if kb else ""  # "K111" — triple click (Exit Recovery)
+        self._rl_signal = self.arduino_config.get("rl_signal", "R1")  # Relay on
+        self._controlpcb_path = self.arduino_config.get("controlpcb_path", "/home/lge/Environment/scripts/ControlPCB.py")
 
         self._abort_requested = False
         
@@ -248,6 +274,32 @@ class WorkflowWorker(QThread):
             self.workflow_finished_signal.emit(False, f"Kiểm tra thiết bị thất bại: {msg}")
             return
         self.log(f"[OK] {msg}", "SUCCESS")
+
+        if self._arduino_enabled:
+            self.log("Kiểm tra kết nối mạch Arduino...", "INFO")
+            code, out, _ = self.ssh.run_command("test -e /dev/arduino")
+            if code != 0:
+                self.log("[CẢNH BÁO] Không tìm thấy kết nối /dev/arduino trên server!", "WARN")
+                self._auth_event.clear()
+                self._auth_result = False
+                self.manual_auth_signal.emit({
+                    "step_idx": -1,
+                    "step_title": "Cảnh Báo Arduino",
+                    "prompt": "Tính năng tự động Bypass bằng Arduino đang BẬT nhưng không tìm thấy thiết bị kết nối (/dev/arduino) trên server.\n\nBạn có quên cắm dây cáp Arduino không?\nNhấn 'Tiếp tục' để bỏ qua và chuyển sang xác thực bằng tay, hoặc tắt bảng này để Hủy.",
+                    "server_host": self.server_host,
+                    "suite_name": self.suite_name,
+                    "device_serial": self._get_device_serial()
+                })
+                self._auth_event.wait()
+                if not self._auth_result or self._abort_requested:
+                    self.log("Người dùng đã hủy quy trình do thiếu Arduino.", "ERROR")
+                    self.workflow_finished_signal.emit(False, "Hủy quy trình do thiếu Arduino.")
+                    return
+                else:
+                    self.log("Chuyển về chế độ xác thực thủ công.", "WARN")
+                    self._arduino_enabled = False
+            else:
+                self.log("[OK] Arduino đã được kết nối sẵn sàng (/dev/arduino).", "SUCCESS")
 
         steps_to_run = []
         if self.single_step_idx is not None:
@@ -349,6 +401,8 @@ class WorkflowWorker(QThread):
             return self._step_lock_bootloader(step)
         elif stype == "manual_auth":
             return self._step_manual_auth(step)
+        elif stype == "arduino_auth":
+            return self._step_arduino_auth(step)
         elif stype == "flash_boot_debug":
             return self._step_flash_boot_debug(step)
         elif stype == "flash_system_gsi":
@@ -369,6 +423,36 @@ class WorkflowWorker(QThread):
         if code == 0 and serial and serial != "unknown":
             return serial
         return ""
+
+    def _check_adb_status(self) -> str:
+        """
+        Kiểm tra trạng thái ADB chi tiết của thiết bị.
+        Follow logic hàm check_adb_devices() trong AutoFlashing.py (dòng 84-95).
+        Returns: "PASS" | "UNAUTHORIZED" | "RECOVERY" | "FAIL"
+        """
+        code, out, _ = self.ssh.run_command("adb devices", timeout=10)
+        if code != 0:
+            return "FAIL"
+        for line in out.strip().splitlines():
+            line = line.strip()
+            if line.endswith("\tdevice") or line.endswith(" device"):
+                return "PASS"
+            elif "unauthorized" in line:
+                return "UNAUTHORIZED"
+            elif "recovery" in line:
+                return "RECOVERY"
+        return "FAIL"
+
+    def _send_arduino(self, signal: str):
+        """
+        Gửi tín hiệu điều khiển xuống mạch Arduino qua SSH.
+        Follow logic hàm ControlPCB() trong AutoFlashing.py (dòng 127-137).
+        """
+        cmd = f'python3 {self._controlpcb_path} "{signal}"'
+        self.log(f"[Arduino] Gửi tín hiệu: {signal} → {cmd}", "INFO")
+        code, out, err = self.ssh.run_command(cmd, timeout=10)
+        if code != 0:
+            self.log(f"[Arduino] Cảnh báo: Lệnh trả về mã {code}. Stderr: {err}", "WARN")
 
     def _ensure_adb_ready(self, reason: str = "", post_sleep: int = 10, timeout_sec: int = 90) -> bool:
         """
@@ -581,6 +665,16 @@ class WorkflowWorker(QThread):
             if code != 0:
                 self.log(f"[ERROR] Lệnh '{actual_cmd}' thất bại với mã {code}", "ERROR")
                 return False
+                
+            # Post-MTC Arduino Bypass (Sau khi ChangeLanguage khởi động lại và kết nối ADB)
+            if "ChangeLanguage.sh" in actual_cmd and self._arduino_enabled:
+                self.log("[ARDUINO] Gửi K11 (Double click) để bypass Privacy sau khi đổi ngôn ngữ...", "INFO")
+                self._send_arduino(self._kb_double)
+                time.sleep(5)
+                self.log("[ARDUINO] Gửi K11 (Double click) lần 2...", "INFO")
+                self._send_arduino(self._kb_double)
+                time.sleep(5)
+                
         return True
 
     def _step_composite(self, step: Dict[str, Any]) -> bool:
@@ -672,6 +766,110 @@ class WorkflowWorker(QThread):
             return False
         self.log("Người dùng đã xác nhận hoàn tất thủ công thành công.", "SUCCESS")
         return True
+
+    def _step_arduino_auth(self, step: Dict[str, Any]) -> bool:
+        if not self._arduino_enabled:
+            self.log("[ARDUINO] Tính năng Arduino đã bị tắt hoặc mất kết nối. Chuyển sang xác thực thủ công.", "WARN")
+            step["prompt"] = "Vui lòng thực hiện thao tác xác thực trên màn hình thiết bị (Bypass thủ công)."
+            return self._step_manual_auth(step)
+            
+        self.log(f"\n[ARDUINO] Bắt đầu xác thực tự động: {step.get('title', '')}", "INFO")
+        
+        max_reboot_loops = 10
+        loop_count = 0
+        auth_success = False
+
+        while loop_count < max_reboot_loops and not auth_success and not self._abort_requested:
+            loop_count += 1
+            self.log(f"[ARDUINO] Vòng lặp kiểm tra ADB lần {loop_count}/{max_reboot_loops}", "INFO")
+
+            # Chờ thiết bị xuất hiện trong adb devices
+            if not self._wait_for_adb(initial_sleep=5, timeout_sec=80):
+                self.log("[ARDUINO] Không tìm thấy thiết bị ADB, sẽ thử khởi động lại qua Relay...", "WARN")
+            else:
+                k1_retries = 0
+                while k1_retries < 5 and not self._abort_requested:
+                    status = self._check_adb_status()
+                    if status == "PASS":
+                        self.log("[ARDUINO] Thiết bị đã xác thực ADB thành công (PASS).", "SUCCESS")
+                        auth_success = True
+                        break
+                    elif status == "UNAUTHORIZED":
+                        self.log(f"[ARDUINO] ADB đang báo UNAUTHORIZED. Gửi tín hiệu K1 để click Allow (Lần {k1_retries+1}/5)...", "WARN")
+                        self._send_arduino(self._kb_signal)
+                        time.sleep(10)
+                    elif status == "RECOVERY":
+                        self.log("[ARDUINO] Thiết bị kẹt ở RECOVERY. Gửi tín hiệu K111 để thoát...", "WARN")
+                        self._send_arduino(self._kb_triple)
+                        time.sleep(20)
+                    else:
+                        self.log("[ARDUINO] Trạng thái ADB không xác định hoặc mất kết nối, chờ 5s...", "WARN")
+                        time.sleep(5)
+                    
+                    k1_retries += 1
+
+                if auth_success:
+                    break
+            
+            # Nếu hết 5 lần thử K1 hoặc không thấy ADB, tiến hành reset relay
+            if not auth_success and not self._abort_requested:
+                if loop_count == 1:
+                    self.log("[ARDUINO] Cảnh báo: Vòng lặp đầu tiên thất bại. Có thể do chưa cắm dây vào HU.", "WARN")
+                    self._error_event.clear()
+                    self._error_decision = StepDecision.ABORT
+                    
+                    orig_idx = getattr(self, "_current_step_idx", 0)
+                    error_msg = ("Đã thử gửi tín hiệu K1 nhiều lần nhưng thiết bị không xác thực được.\n"
+                                 "Bạn có quên cắm cáp nối từ Arduino vào cổng USB của xe không?\n\n"
+                                 "- Chọn 'Thử lại' (Retry) nếu bạn đã cắm lại và muốn tiếp tục.\n"
+                                 "- Chọn 'Bỏ qua' (Skip) để tự tay ấn xác thực trên màn hình xe (Xác thực thủ công).\n"
+                                 "- Chọn 'Dừng' (Abort) để hủy quy trình.")
+                    
+                    self.step_error_signal.emit(orig_idx, "Nghi vấn quên cáp Arduino", error_msg)
+                    self._error_event.wait()
+                    
+                    if self._abort_requested or self._error_decision == StepDecision.ABORT:
+                        self.log("Người dùng đã chọn DỪNG quy trình.", "ERROR")
+                        return False
+                    elif self._error_decision == StepDecision.SKIP:
+                        self.log("Chuyển sang chế độ xác thực thủ công.", "WARN")
+                        self._arduino_enabled = False
+                        step["prompt"] = "Vui lòng thực hiện thao tác xác thực trên màn hình thiết bị (Bypass thủ công)."
+                        return self._step_manual_auth(step)
+                    else:
+                        self.log("Đã chọn Thử lại, tiến hành Reboot bằng Relay và kiểm tra lại...", "INFO")
+
+                self.log(f"[ARDUINO] Không thể xác thực, tiến hành khởi động lại thiết bị bằng Relay ({self._rl_signal}off -> {self._rl_signal})...", "ERROR")
+                self._send_arduino(self._rl_signal + "off")
+                time.sleep(5)
+                self._send_arduino(self._rl_signal)
+                self.log(f"[ARDUINO] Đã bật lại nguồn, chờ khởi động...", "INFO")
+                time.sleep(15)
+
+        if not auth_success:
+            self.log("[ERROR] [ARDUINO] Xác thực thất bại sau nhiều lần thử lại.", "ERROR")
+            return False
+
+        self.log("[ARDUINO] Đợi 30s để màn hình load hoàn chỉnh trước khi Bypass Privacy...", "INFO")
+        for _ in range(30):
+            if self._abort_requested:
+                return False
+            time.sleep(1)
+
+        self.log("[ARDUINO] Gửi K11 (Double click) lần 1 để bypass Privacy/Setup Wizard...", "INFO")
+        self._send_arduino(self._kb_double)
+        time.sleep(5)
+
+        self.log("[ARDUINO] Gửi K11 (Double click) lần 2...", "INFO")
+        self._send_arduino(self._kb_double)
+        time.sleep(5)
+
+        if self._ensure_adb_ready("Hoàn tất bypass Arduino", post_sleep=5):
+            self.log("[ARDUINO] Gửi K111 (Triple click) lần cuối đề phòng popup lạ...", "INFO")
+            self._send_arduino(self._kb_triple)
+            return True
+        else:
+            return False
 
     def _step_flash_boot_debug(self, step: Dict[str, Any]) -> bool:
         workdir = step.get("workdir", "")

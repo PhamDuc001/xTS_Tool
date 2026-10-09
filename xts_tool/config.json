@@ -91,6 +91,12 @@
     "fastbootd_wait_sec": 45,
     "poll_interval_sec": 3
   },
+  "arduino": {
+    "enabled": true,
+    "kb_signal": "K1",
+    "rl_signal": "R1",
+    "controlpcb_path": "/home/lge/Environment/scripts/ControlPCB.py"
+  },
   "wifi_networks": [
     {
       "ssid": "GG",

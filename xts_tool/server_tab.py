@@ -512,12 +512,14 @@ class ServerTab(QWidget):
     # Pre-Setup Steps Table & Suite Selection
     # -------------------------------------------------------------
     def _on_suite_changed(self, suite_name: str):
-        self.current_steps = build_workflow_steps(suite_name, self.paths)
+        arduino_enabled = self.config.get("arduino", {}).get("enabled", False)
+        self.current_steps = build_workflow_steps(suite_name, self.paths, arduino_enabled=arduino_enabled)
         self._rebuild_steps_table()
 
     def _rebuild_steps_table(self):
         suite = self.combo_suite.currentText()
-        self.current_steps = build_workflow_steps(suite, self.paths)
+        arduino_enabled = self.config.get("arduino", {}).get("enabled", False)
+        self.current_steps = build_workflow_steps(suite, self.paths, arduino_enabled=arduino_enabled)
 
         self.table_steps.setRowCount(len(self.current_steps))
         for row, step in enumerate(self.current_steps):
@@ -580,7 +582,8 @@ class ServerTab(QWidget):
                 return
 
         # Re-build steps with latest paths
-        self.current_steps = build_workflow_steps(suite, self.paths)
+        arduino_enabled = self.config.get("arduino", {}).get("enabled", False)
+        self.current_steps = build_workflow_steps(suite, self.paths, arduino_enabled=arduino_enabled)
 
         # Reset step statuses
         if single_step_idx is None:
@@ -601,7 +604,8 @@ class ServerTab(QWidget):
             single_step_idx=single_step_idx,
             timeouts=self.config.get("timeouts", {}),
             server_host=self.txt_host.text().strip() or getattr(self.ssh, "host", ""),
-            suite_name=suite
+            suite_name=suite,
+            arduino_config=self.config.get("arduino", {})
         )
 
         self.worker.log_signal.connect(self._append_log)
