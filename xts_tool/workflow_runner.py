@@ -296,7 +296,17 @@ class WorkflowWorker(QThread):
             return
         self.log(f"[OK] {msg}", "SUCCESS")
 
-        if self._arduino_enabled:
+        steps_to_run = []
+        if self.single_step_idx is not None:
+            if 0 <= self.single_step_idx < len(self.steps):
+                steps_to_run = [(self.single_step_idx, self.steps[self.single_step_idx])]
+        else:
+            steps_to_run = list(enumerate(self.steps))
+
+        # Chỉ kiểm tra cáp Arduino khi workflow thực sự chứa step arduino_auth
+        # (tránh hiện dialog cảnh báo vô ích khi user chỉ chạy lẻ 1 step flash).
+        need_arduino = any(s.get("type") == "arduino_auth" for _, s in steps_to_run)
+        if self._arduino_enabled and need_arduino:
             self.log("Kiểm tra kết nối mạch Arduino...", "INFO")
             code, out, _ = self.ssh.run_command("test -e /dev/arduino")
             if code != 0:
@@ -321,13 +331,6 @@ class WorkflowWorker(QThread):
                     self._arduino_enabled = False
             else:
                 self.log("[OK] Arduino đã được kết nối sẵn sàng (/dev/arduino).", "SUCCESS")
-
-        steps_to_run = []
-        if self.single_step_idx is not None:
-            if 0 <= self.single_step_idx < len(self.steps):
-                steps_to_run = [(self.single_step_idx, self.steps[self.single_step_idx])]
-        else:
-            steps_to_run = list(enumerate(self.steps))
 
         total = len(steps_to_run)
         success_all = True
