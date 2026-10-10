@@ -7,7 +7,7 @@ import os
 import re
 import time
 from datetime import datetime
-from typing import Dict, Any
+from typing import Dict, Any, List
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QLineEdit,
     QPushButton, QComboBox, QTableWidget, QTableWidgetItem, QHeaderView,
@@ -523,6 +523,15 @@ class ServerTab(QWidget):
             "wifi_password": pc.get("wifi_password") or default_net.get("password", ""),
         }
 
+    def _get_hu_list(self) -> List[Dict[str, Any]]:
+        """
+        Danh sách HU cho chế độ chạy tuần tự nhiều máy.
+        Mỗi phần tử: {"serial": str, "kb_signal": "K1", "rl_signal": "R1", "enabled": bool}.
+        Rỗng = chế độ 1 HU như cũ.
+        """
+        hus = self.config.get("hus", [])
+        return [h for h in hus if h.get("enabled", True) and h.get("serial")]
+
     def _on_suite_changed(self, suite_name: str):
         arduino_enabled = self.config.get("arduino", {}).get("enabled", False)
         self.current_steps = build_workflow_steps(suite_name, self.paths, arduino_enabled=arduino_enabled,
@@ -570,13 +579,20 @@ class ServerTab(QWidget):
             QMessageBox.warning(self, "Chưa kết nối", "Vui lòng kết nối SSH trước!")
             return
 
-        # 1. Device check
-        valid = self._check_device_status(show_dialog=False)
-        if not valid:
-            QMessageBox.critical(self, "Lỗi Thiết Bị", 
-                "Không thể chạy Pre-Setup: Yêu cầu kết nối DUY NHẤT 1 thiết bị.\n"
-                f"{self.lbl_device_status.text()}")
-            return
+        # 1. Device check: multi-HU mode thì worker tự detect + cô lập từng HU,
+        # bỏ qua gate "đúng 1 device" ở đây (worker sẽ kiểm tra sau khi cô lập).
+        hus = self._get_hu_list()
+        if hus:
+            self._append_log(f"[MULTI-HU] Chế độ chạy tuần tự {len(hus)} HU: "
+                             + ", ".join(f"{h.get('serial')}({h.get('kb_signal')}/{h.get('rl_signal')})" for h in hus),
+                             "INFO")
+        else:
+            valid = self._check_device_status(show_dialog=False)
+            if not valid:
+                QMessageBox.critical(self, "Lỗi Thiết Bị",
+                    "Không thể chạy Pre-Setup: Yêu cầu kết nối DUY NHẤT 1 thiết bị.\n"
+                    f"{self.lbl_device_status.text()}")
+                return
 
         # 2. Confirm paths if userdebug or user is empty
         suite = self.combo_suite.currentText()
@@ -620,7 +636,8 @@ class ServerTab(QWidget):
             timeouts=self.config.get("timeouts", {}),
             server_host=self.txt_host.text().strip() or getattr(self.ssh, "host", ""),
             suite_name=suite,
-            arduino_config=self.config.get("arduino", {})
+            arduino_config=self.config.get("arduino", {}),
+            hu_list=hus
         )
 
         self.worker.log_signal.connect(self._append_log)
