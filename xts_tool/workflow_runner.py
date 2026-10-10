@@ -3,6 +3,7 @@ Workflow Runner for xTS Pre-Setup.
 Manages step execution, waiting for devices (fastboot/adb), error handling, 
 manual authentication prompts, and single/all step modes.
 """
+import os
 import time
 import threading
 from typing import Dict, List, Any, Optional
@@ -16,7 +17,8 @@ class StepDecision:
     ABORT = "ABORT"
 
 
-def build_workflow_steps(suite_name: str, paths: Dict[str, Any], arduino_enabled: bool = False) -> List[Dict[str, Any]]:
+def build_workflow_steps(suite_name: str, paths: Dict[str, Any], arduino_enabled: bool = False,
+                         precondition_cfg: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
     """
     Builds the list of steps for the selected test suite.
     Paths dict contains:
@@ -30,6 +32,9 @@ def build_workflow_steps(suite_name: str, paths: Dict[str, Any], arduino_enabled
       - calibration_path: str
       - calibration_script: str
       - gsi_image_path: str
+    precondition_cfg: {"enabled": bool, "wifi_ssid": str, "wifi_password": str}
+        Neu enabled, them buoc Precondition (port tu Precondition.sh ban goc:
+        WiFi verify ping, tat lockscreen, stay-awake, gio 12h, en-US) vao cuoi workflow.
     """
     suite = suite_name.upper()
 
@@ -47,6 +52,19 @@ def build_workflow_steps(suite_name: str, paths: Dict[str, Any], arduino_enabled
     gsi_dir = paths.get("gsi_image_path", "")
 
     steps = []
+
+    def _maybe_append_precondition():
+        """Thêm bước Precondition vào cuối (port Precondition.sh bản gốc)."""
+        if precondition_cfg and precondition_cfg.get("enabled", True):
+            num = len(steps) + 1
+            steps.append({
+                "id": "precondition",
+                "title": f"{num}. Precondition (WiFi/Lockscreen/StayAwake)",
+                "type": "precondition",
+                "wifi_ssid": precondition_cfg.get("wifi_ssid", ""),
+                "wifi_password": precondition_cfg.get("wifi_password", ""),
+                "desc": "Kết nối WiFi (verify ping), tắt lockscreen vĩnh viễn, stay-awake, giờ 12h, en-US"
+            })
 
     # Step 1: Flash Userdebug (Common to all)
     steps.append({
@@ -100,6 +118,7 @@ def build_workflow_steps(suite_name: str, paths: Dict[str, Any], arduino_enabled
             "wait_for_adb": True,
             "desc": "adb reboot bootloader -> fastboot flashing lock -> reboot & chờ adb"
         })
+        _maybe_append_precondition()
         return steps
 
     # For ATS, CTS, GSI, VTS: Flash User Build
@@ -186,6 +205,7 @@ def build_workflow_steps(suite_name: str, paths: Dict[str, Any], arduino_enabled
                 "desc": "adb reboot bootloader -> fastboot flash boot_a/boot_b boot.img -> reboot"
             })
 
+    _maybe_append_precondition()
     return steps
 
 
@@ -222,10 +242,11 @@ class WorkflowWorker(QThread):
         # Arduino configuration — follow AutoFlashing devices.setup() logic
         self.arduino_config = arduino_config or {}
         self._arduino_enabled = self.arduino_config.get("enabled", False)
-        kb = self.arduino_config.get("kb_signal", "K1")
-        self._kb_signal = kb                          # "K1"  — single click (Enable USB Debug)
-        self._kb_double = kb + kb[1] if kb else ""    # "K11" — double click (Allow Privacy)
-        self._kb_triple = (kb + kb[1] + kb[1]) if kb else ""  # "K111" — triple click (Exit Recovery)
+        kb = self.arduino_config.get("kb_signal", "K1") or "K1"
+        last_char = kb[-1]  # safe even for single-char signals (avoids kb[1] IndexError)
+        self._kb_signal = kb                      # e.g. "K1"   — single click (Enable USB Debug / RSA Allow)
+        self._kb_double = kb + last_char          # e.g. "K11"  — double click (Allow Privacy)
+        self._kb_triple = kb + last_char + last_char  # e.g. "K111" — triple click (Exit Recovery)
         self._rl_signal = self.arduino_config.get("rl_signal", "R1")  # Relay on
         self._controlpcb_path = self.arduino_config.get("controlpcb_path", "/home/lge/Environment/scripts/ControlPCB.py")
 
@@ -409,6 +430,8 @@ class WorkflowWorker(QThread):
             return self._step_flash_system_gsi(step)
         elif stype == "flash_boot_orig":
             return self._step_flash_boot_orig(step)
+        elif stype == "precondition":
+            return self._step_precondition(step)
         else:
             self.log(f"Không nhận diện được loại bước: {stype}", "ERROR")
             return False
@@ -442,6 +465,29 @@ class WorkflowWorker(QThread):
             elif "recovery" in line:
                 return "RECOVERY"
         return "FAIL"
+
+    def _wait_for_adb_any_state(self, timeout_sec: int = 90) -> str:
+        """
+        Chờ thiết bị xuất hiện trong 'adb devices' ở BẤT KỲ trạng thái nào
+        (device / unauthorized / recovery), khác với _wait_for_adb() chỉ
+        chấp nhận trạng thái authorized ("\tdevice").
+
+        Rất quan trọng cho _step_arduino_auth: dialog RSA (UNAUTHORIZED) chỉ
+        hiện khi máy đã boot nhưng chưa authorized — nếu dùng _wait_for_adb()
+        ở đây thì nhánh xử lý UNAUTHORIZED/RECOVERY phía dưới không bao giờ
+        tới được (timeout 80s rồi reboot relay vô ích).
+
+        Returns: "PASS" | "UNAUTHORIZED" | "RECOVERY" | "" (timeout/abort)
+        """
+        start = time.time()
+        while time.time() - start < timeout_sec:
+            if self._abort_requested:
+                return ""
+            status = self._check_adb_status()
+            if status in ("PASS", "UNAUTHORIZED", "RECOVERY"):
+                return status
+            time.sleep(self.timeouts.get("poll_interval_sec", 3))
+        return ""
 
     def _send_arduino(self, signal: str):
         """
@@ -666,12 +712,16 @@ class WorkflowWorker(QThread):
                 self.log(f"[ERROR] Lệnh '{actual_cmd}' thất bại với mã {code}", "ERROR")
                 return False
                 
-            # Post-MTC Arduino Bypass (Sau khi ChangeLanguage khởi động lại và kết nối ADB)
+            # Post-MTC Arduino Bypass (bản gốc: KeyBoard_Allow_Privacy x2 sau changeLanguage).
+            # ChangeLanguage có thể khiến HU reboot — phải đảm bảo ADB đã về ổn định
+            # trước khi gửi phím, nếu không phím sẽ "rơi vào khoảng không".
             if "ChangeLanguage.sh" in actual_cmd and self._arduino_enabled:
-                self.log("[ARDUINO] Gửi K11 (Double click) để bypass Privacy sau khi đổi ngôn ngữ...", "INFO")
+                if not self._ensure_adb_ready("Sau khi ChangeLanguage (thiết bị có thể đang reboot)", post_sleep=5):
+                    return False
+                self.log("[ARDUINO] Gửi double-click để bypass Privacy sau khi đổi ngôn ngữ...", "INFO")
                 self._send_arduino(self._kb_double)
                 time.sleep(5)
-                self.log("[ARDUINO] Gửi K11 (Double click) lần 2...", "INFO")
+                self.log("[ARDUINO] Gửi double-click lần 2...", "INFO")
                 self._send_arduino(self._kb_double)
                 time.sleep(5)
                 
@@ -783,30 +833,34 @@ class WorkflowWorker(QThread):
             loop_count += 1
             self.log(f"[ARDUINO] Vòng lặp kiểm tra ADB lần {loop_count}/{max_reboot_loops}", "INFO")
 
-            # Chờ thiết bị xuất hiện trong adb devices
-            if not self._wait_for_adb(initial_sleep=5, timeout_sec=80):
-                self.log("[ARDUINO] Không tìm thấy thiết bị ADB, sẽ thử khởi động lại qua Relay...", "WARN")
+            # Chờ thiết bị xuất hiện ở BẤT KỲ trạng thái nào (kể cả UNAUTHORIZED —
+            # chính là lúc dialog RSA đang hiện trên màn hình và cần bấm Allow).
+            # LƯU Ý: không dùng _wait_for_adb() ở đây vì nó chỉ chấp nhận thiết bị
+            # đã authorized, làm nhánh UNAUTHORIZED/RECOVERY bên dưới thành dead code.
+            status = self._wait_for_adb_any_state(timeout_sec=80)
+            if not status:
+                self.log("[ARDUINO] Hết timeout chờ thiết bị xuất hiện trên ADB, sẽ thử khởi động lại qua Relay...", "WARN")
             else:
                 k1_retries = 0
                 while k1_retries < 5 and not self._abort_requested:
-                    status = self._check_adb_status()
                     if status == "PASS":
                         self.log("[ARDUINO] Thiết bị đã xác thực ADB thành công (PASS).", "SUCCESS")
                         auth_success = True
                         break
                     elif status == "UNAUTHORIZED":
-                        self.log(f"[ARDUINO] ADB đang báo UNAUTHORIZED. Gửi tín hiệu K1 để click Allow (Lần {k1_retries+1}/5)...", "WARN")
+                        self.log(f"[ARDUINO] ADB đang báo UNAUTHORIZED (dialog RSA trên màn hình). Gửi tín hiệu {self._kb_signal} để bấm Allow (Lần {k1_retries+1}/5)...", "WARN")
                         self._send_arduino(self._kb_signal)
                         time.sleep(10)
                     elif status == "RECOVERY":
-                        self.log("[ARDUINO] Thiết bị kẹt ở RECOVERY. Gửi tín hiệu K111 để thoát...", "WARN")
+                        self.log("[ARDUINO] Thiết bị kẹt ở RECOVERY. Gửi tín hiệu triple-click để thoát...", "WARN")
                         self._send_arduino(self._kb_triple)
                         time.sleep(20)
                     else:
                         self.log("[ARDUINO] Trạng thái ADB không xác định hoặc mất kết nối, chờ 5s...", "WARN")
                         time.sleep(5)
-                    
+
                     k1_retries += 1
+                    status = self._check_adb_status()
 
                 if auth_success:
                     break
@@ -856,20 +910,83 @@ class WorkflowWorker(QThread):
                 return False
             time.sleep(1)
 
-        self.log("[ARDUINO] Gửi K11 (Double click) lần 1 để bypass Privacy/Setup Wizard...", "INFO")
+        self.log("[ARDUINO] Gửi double-click lần 1 để bypass Privacy/Setup Wizard...", "INFO")
         self._send_arduino(self._kb_double)
         time.sleep(5)
 
-        self.log("[ARDUINO] Gửi K11 (Double click) lần 2...", "INFO")
+        self.log("[ARDUINO] Gửi double-click lần 2...", "INFO")
         self._send_arduino(self._kb_double)
         time.sleep(5)
+
+        # Verify: Setup Wizard đã hoàn tất chưa (user_setup_complete=1).
+        # Bản gốc chỉ bấm "mù" không verify — thêm bước này để biết chắc chắn,
+        # tránh chạy tiếp khi màn hình vẫn kẹt ở wizard.
+        if self._verify_setup_complete(timeout_sec=60):
+            self.log("[ARDUINO] Xác minh: Setup Wizard đã hoàn tất (user_setup_complete=1).", "SUCCESS")
+        else:
+            self.log("[ARDUINO] CẢNH BÁO: Không xác minh được Setup Wizard đã xong (timeout 60s). "
+                     "Có thể wizard vẫn hiển thị — hãy kiểm tra tay trên màn hình xe.", "WARN")
 
         if self._ensure_adb_ready("Hoàn tất bypass Arduino", post_sleep=5):
-            self.log("[ARDUINO] Gửi K111 (Triple click) lần cuối đề phòng popup lạ...", "INFO")
+            self.log("[ARDUINO] Gửi triple-click lần cuối đề phòng popup lạ...", "INFO")
             self._send_arduino(self._kb_triple)
             return True
         else:
             return False
+
+    def _verify_setup_complete(self, timeout_sec: int = 60) -> bool:
+        """Polls 'settings get secure user_setup_complete' until it becomes 1."""
+        start = time.time()
+        while time.time() - start < timeout_sec:
+            if self._abort_requested:
+                return False
+            code, out, _ = self.ssh.run_command(
+                "adb shell settings get secure user_setup_complete", timeout=10)
+            if code == 0 and out.strip() == "1":
+                return True
+            time.sleep(5)
+        return False
+
+    def _step_precondition(self, step: Dict[str, Any]) -> bool:
+        """
+        Chạy Precondition cho thiết bị (port từ Precondition.sh bản gốc AutoFlashing):
+        WiFi (verify ping) -> tắt lockscreen vĩnh viễn -> stay-awake -> giờ 12h -> en-US.
+        Dùng chung module precondition.py với HU Settings Dialog.
+        """
+        from precondition import run_precondition
+
+        if not self._ensure_adb_ready("Trước khi chạy Precondition", post_sleep=5):
+            return False
+
+        serial = self._get_device_serial()
+        if not serial:
+            serial = self._device_serial
+        if not serial:
+            self.log("[ERROR] Không xác định được serial thiết bị cho bước Precondition!", "ERROR")
+            return False
+        self._device_serial = serial
+
+        # Đảm bảo setlocale.jar có trên server để push xuống thiết bị
+        local_jar = os.path.join(os.path.dirname(os.path.abspath(__file__)), "setlocale.jar")
+        remote_jar = "/tmp/setlocale.jar"
+        if os.path.exists(local_jar):
+            ok, msg = self.ssh.upload_file(local_jar, remote_jar)
+            if not ok:
+                self.log(f"[Precondition] Cảnh báo upload setlocale.jar: {msg}", "WARN")
+        else:
+            self.log("[Precondition] Cảnh báo: không tìm thấy setlocale.jar local, bước đổi ngôn ngữ có thể bỏ qua.", "WARN")
+
+        self.log(f"[Precondition] Bắt đầu precondition cho thiết bị {serial}...", "INFO")
+        ok = run_precondition(
+            self.ssh, serial,
+            step.get("wifi_ssid", ""), step.get("wifi_password", ""),
+            self.log, self.is_aborted,
+            server_jar_path=remote_jar,
+        )
+        if not ok:
+            self.log("[ERROR] Precondition bị hủy bởi người dùng.", "ERROR")
+            return False
+        return True
 
     def _step_flash_boot_debug(self, step: Dict[str, Any]) -> bool:
         workdir = step.get("workdir", "")
