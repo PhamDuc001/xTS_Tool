@@ -12,7 +12,7 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QLineEdit,
     QPushButton, QComboBox, QTableWidget, QTableWidgetItem, QHeaderView,
     QTextEdit, QProgressBar, QGroupBox, QMessageBox, QFileDialog, QSplitter,
-    QTabWidget, QAbstractItemView, QApplication
+    QTabWidget, QAbstractItemView, QApplication, QDialog
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QTextCursor, QTextCharFormat, QFont
@@ -21,6 +21,7 @@ from ssh_client import SSHManager
 from workflow_runner import WorkflowWorker, build_workflow_steps, StepDecision
 from confirm_paths_dialog import ConfirmPathsDialog, ManualAuthDialog, ErrorDecisionDialog
 from hu_settings_dialog import HUSettingsDialog
+from hu_select_dialog import HUSelectDialog
 from report_collector import ReportOrganizeWorker
 from generate_report_tab import GenerateReportTab
 
@@ -581,8 +582,14 @@ class ServerTab(QWidget):
 
         # 1. Device check: multi-HU mode thì worker tự detect + cô lập từng HU,
         # bỏ qua gate "đúng 1 device" ở đây (worker sẽ kiểm tra sau khi cô lập).
+        # Mỗi lần chạy hiện dialog cho user tick chọn HU cần chạy đợt này.
         hus = self._get_hu_list()
         if hus:
+            dlg = HUSelectDialog(self, hus)
+            if dlg.exec() != QDialog.DialogCode.Accepted:
+                self._append_log("[MULTI-HU] Đã hủy chọn HU, không chạy.", "WARN")
+                return
+            hus = dlg.selected_hus()
             self._append_log(f"[MULTI-HU] Chế độ chạy tuần tự {len(hus)} HU: "
                              + ", ".join(f"{h.get('serial')}({h.get('kb_signal')}/{h.get('rl_signal')})" for h in hus),
                              "INFO")
