@@ -97,6 +97,11 @@
     "rl_signal": "R1",
     "controlpcb_path": "/home/lge/Environment/scripts/ControlPCB.py"
   },
+  "precondition": {
+    "enabled": true,
+    "wifi_ssid": "",
+    "wifi_password": ""
+  },
   "wifi_networks": [
     {
       "ssid": "GG",

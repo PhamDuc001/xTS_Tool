@@ -7,6 +7,7 @@ import os
 import re
 import time
 from datetime import datetime
+from typing import Dict, Any
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QLineEdit,
     QPushButton, QComboBox, QTableWidget, QTableWidgetItem, QHeaderView,
@@ -511,15 +512,28 @@ class ServerTab(QWidget):
     # -------------------------------------------------------------
     # Pre-Setup Steps Table & Suite Selection
     # -------------------------------------------------------------
+    def _get_precondition_cfg(self) -> Dict[str, Any]:
+        """Builds precondition config: explicit override or wifi_networks[0] fallback."""
+        pc = self.config.get("precondition", {})
+        nets = self.config.get("wifi_networks", [])
+        default_net = nets[0] if nets else {}
+        return {
+            "enabled": pc.get("enabled", True),
+            "wifi_ssid": pc.get("wifi_ssid") or default_net.get("ssid", ""),
+            "wifi_password": pc.get("wifi_password") or default_net.get("password", ""),
+        }
+
     def _on_suite_changed(self, suite_name: str):
         arduino_enabled = self.config.get("arduino", {}).get("enabled", False)
-        self.current_steps = build_workflow_steps(suite_name, self.paths, arduino_enabled=arduino_enabled)
+        self.current_steps = build_workflow_steps(suite_name, self.paths, arduino_enabled=arduino_enabled,
+                                                  precondition_cfg=self._get_precondition_cfg())
         self._rebuild_steps_table()
 
     def _rebuild_steps_table(self):
         suite = self.combo_suite.currentText()
         arduino_enabled = self.config.get("arduino", {}).get("enabled", False)
-        self.current_steps = build_workflow_steps(suite, self.paths, arduino_enabled=arduino_enabled)
+        self.current_steps = build_workflow_steps(suite, self.paths, arduino_enabled=arduino_enabled,
+                                                  precondition_cfg=self._get_precondition_cfg())
 
         self.table_steps.setRowCount(len(self.current_steps))
         for row, step in enumerate(self.current_steps):
@@ -583,7 +597,8 @@ class ServerTab(QWidget):
 
         # Re-build steps with latest paths
         arduino_enabled = self.config.get("arduino", {}).get("enabled", False)
-        self.current_steps = build_workflow_steps(suite, self.paths, arduino_enabled=arduino_enabled)
+        self.current_steps = build_workflow_steps(suite, self.paths, arduino_enabled=arduino_enabled,
+                                                  precondition_cfg=self._get_precondition_cfg())
 
         # Reset step statuses
         if single_step_idx is None:

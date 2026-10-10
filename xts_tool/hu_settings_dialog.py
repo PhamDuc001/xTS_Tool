@@ -172,13 +172,15 @@ class HUSettingsWorker(QThread):
         self.operation_finished.emit(True, "Đã đọc xong thông tin")
 
     def _do_apply(self):
+        from precondition import run_precondition
+
         serials = self._get_connected_devices()
         if not serials:
             self.log_message.emit("Lỗi: Không tìm thấy thiết bị nào để cài đặt!", "ERROR")
             self.operation_finished.emit(False, "Không có thiết bị")
             return
 
-        # Step 1: Upload setlocale.jar to /tmp/ on remote Linux Server via SFTP
+        # Upload setlocale.jar to /tmp/ on remote Linux Server via SFTP
         local_jar = os.path.join(os.path.dirname(__file__), "setlocale.jar")
         if not os.path.exists(local_jar):
             # Fallback to parent dir
@@ -193,9 +195,16 @@ class HUSettingsWorker(QThread):
         else:
             self.log_message.emit("Cảnh báo: Không tìm thấy setlocale.jar trên máy local.", "WARN")
 
-        total_steps = len(serials) * 5
+        # 6 sub-steps trong run_precondition + 1 bước Bluetooth = 7 bước/thiết bị
+        total_steps = len(serials) * 7
         current_step = 0
 
+        def bump_progress(desc: str):
+            nonlocal current_step
+            current_step += 1
+            self.progress.emit(current_step, total_steps)
+
+        all_ok = True
         for idx, s in enumerate(serials, 1):
             if self._is_aborted:
                 self.log_message.emit("Tiến trình đã bị hủy bởi người dùng.", "WARN")
@@ -204,60 +213,38 @@ class HUSettingsWorker(QThread):
 
             self.log_message.emit(f"\n--- Đang cài đặt cho Thiết Bị {idx}/{len(serials)} (Serial: {s}) ---", "INFO")
 
-            # 1. Wi-Fi
-            self.log_message.emit(f"[{s}] Bật Wi-Fi và kết nối mạng '{self.wifi_ssid}'...", "INFO")
-            self.ssh.run_command(f"adb -s {s} shell cmd -w wifi set-wifi-enabled enabled")
-            self.ssh.run_command(f'adb -s {s} shell cmd -w wifi connect-network "{self.wifi_ssid}" wpa2 "{self.wifi_password}"')
-            current_step += 1
-            self.progress.emit(current_step, total_steps)
-            time.sleep(1)
-
-            # 2. Bluetooth
+            # Bluetooth (giữ lại từ bản cũ của dialog — bản gốc không có bước này)
             self.log_message.emit(f"[{s}] Bật Bluetooth...", "INFO")
             self.ssh.run_command(f"adb -s {s} shell svc bluetooth enable")
             self.ssh.run_command(f"adb -s {s} shell settings put global bluetooth_on 1")
-            current_step += 1
-            self.progress.emit(current_step, total_steps)
+            bump_progress("Bluetooth")
 
-            # 3. Stay Awake & Dismiss Keyguard
-            self.log_message.emit(f"[{s}] Cài đặt Giữ màn hình luôn sáng (Stay Awake) & Mở khóa...", "INFO")
-            self.ssh.run_command(f"adb -s {s} shell svc power stayon true")
-            self.ssh.run_command(f"adb -s {s} shell settings put global stay_on_while_plugged_in 7")
-            self.ssh.run_command(f"adb -s {s} shell wm dismiss-keyguard")
-            current_step += 1
-            self.progress.emit(current_step, total_steps)
-
-            # 4. Date & Time Format 12h
-            self.log_message.emit(f"[{s}] Đặt định dạng giờ 12h...", "INFO")
-            self.ssh.run_command(f"adb -s {s} shell settings put system time_12_24 12")
-            current_step += 1
-            self.progress.emit(current_step, total_steps)
-
-            # 5. Language en-US (Zero-Footprint execution)
-            self.log_message.emit(f"[{s}] Thiết lập ngôn ngữ en-US (Zero-Footprint)...", "INFO")
-            push_code, _, push_err = self.ssh.run_command(f"adb -s {s} push {remote_jar} /data/local/tmp/setlocale.jar")
-            if push_code == 0:
-                self.ssh.run_command(
-                    f'adb -s {s} shell "CLASSPATH=/data/local/tmp/setlocale.jar app_process /data/local/tmp com.setlocale.SetLocale en-US"'
-                )
-                # Zero-Footprint: Xóa ngay lập tức trên DUT
-                self.ssh.run_command(f'adb -s {s} shell "rm -f /data/local/tmp/setlocale.jar"')
-                self.log_message.emit(f"[{s}] Đã chuyển đổi ngôn ngữ sang en-US và dọn sạch file tạm.", "SUCCESS")
-            else:
-                self.log_message.emit(f"[{s}] Không thể push setlocale.jar: {push_err}", "ERROR")
-
-            current_step += 1
-            self.progress.emit(current_step, total_steps)
-
-        # Chờ mạng Wi-Fi và cấu hình ổn định
-        self.log_message.emit("\nĐang đợi thiết bị cập nhật trạng thái kết nối mạng (3s)...", "INFO")
-        time.sleep(3)
+            # Precondition dùng chung với workflow (port từ Precondition.sh bản gốc:
+            # WiFi verify ping + retry, BACK/HOME, tắt lockscreen vĩnh viễn,
+            # stay-awake verify, giờ 12h verify, en-US verify)
+            ok = run_precondition(
+                self.ssh, s,
+                self.wifi_ssid, self.wifi_password,
+                lambda t, lv="INFO": self.log_message.emit(t, lv),
+                is_aborted=lambda: self._is_aborted,
+                server_jar_path=remote_jar,
+                progress_cb=bump_progress,
+            )
+            all_ok = all_ok and ok
+            if self._is_aborted:
+                self.log_message.emit("Tiến trình đã bị hủy bởi người dùng.", "WARN")
+                self.operation_finished.emit(False, "Bị hủy")
+                return
 
         # Re-query
         self.log_message.emit("Đang cập nhật lại trạng thái hiển thị...", "INFO")
         self._do_query()
-        self.log_message.emit("\n🎉 HOÀN TẤT CÀI ĐẶT TẤT CẢ CÁC THIẾT BỊ THÀNH CÔNG!", "SUCCESS")
-        self.operation_finished.emit(True, "Cài đặt thành công")
+        if all_ok:
+            self.log_message.emit("\n🎉 HOÀN TẤT CÀI ĐẶT TẤT CẢ CÁC THIẾT BỊ THÀNH CÔNG!", "SUCCESS")
+            self.operation_finished.emit(True, "Cài đặt thành công")
+        else:
+            self.log_message.emit("\n⚠️ Hoàn tất nhưng có thiết bị bị hủy giữa chừng.", "WARN")
+            self.operation_finished.emit(False, "Bị hủy")
 
 
 class DeviceStatusCard(QGroupBox):
