@@ -451,8 +451,10 @@ class WorkflowWorker(QThread):
     def _run_multi_hu_sequential(self) -> Tuple[bool, str]:
         """
         Chế độ nhiều HU chạy TUẦN TỰ (khác bản gốc chạy song song):
-        với mỗi HU -> tắt nguồn các HU khác qua relay -> bật HU này ->
+        với mỗi HU -> tắt nguồn các HU khác -> bật HU này ->
         chờ ADB chỉ còn đúng serial đó -> chạy nguyên workflow Pre-setup.
+        Nguồn điều khiển qua relay (rl_signal) hoặc công tắc THỦ CÔNG
+        (rl_signal trống -> dialog yêu cầu user gạt công tắc + verify ADB).
         """
         hus = self.hu_list
         self.log(f"Phát hiện cấu hình {len(hus)} HU — chạy TUẦN TỰ từng máy.", "INFO")
@@ -600,25 +602,40 @@ class WorkflowWorker(QThread):
 
     def _isolate_hu(self, hu: Dict[str, Any], hus: List[Dict[str, Any]], tag: str) -> bool:
         """
-        Cô lập 1 HU: tắt nguồn tất cả HU khác qua relay, bật HU mục tiêu,
+        Cô lập 1 HU: tắt nguồn tất cả HU khác, bật HU mục tiêu,
         chờ đến khi ADB chỉ còn đúng serial đó (timeout theo _isolate_timeout_sec).
+        HU nào không có rl_signal -> dùng công tắc nguồn THỦ CÔNG
+        (dialog yêu cầu user gạt công tắc + verify bằng ADB).
         """
         target = hu.get("serial", "")
-        self.log(f"{tag} Cô lập HU: tắt nguồn các HU khác qua relay...", "INFO")
+        self.log(f"{tag} Cô lập HU: tắt nguồn các HU khác...", "INFO")
         for other in hus:
-            if other.get("serial") == target:
+            oserial = other.get("serial", "")
+            if oserial == target:
                 continue
             rl = other.get("rl_signal", "")
             if rl:
                 self._send_arduino(f"{rl}off")
                 time.sleep(2)
+            else:
+                # Nguồn thủ công: yêu cầu user gạt công tắc, verify đến khi mất khỏi ADB
+                while not self._abort_requested:
+                    if not self._ask_manual_power(other, turn_on=False, tag=tag):
+                        return False
+                    if self._wait_serial_gone(oserial, tag):
+                        self.log(f"{tag} [OK] HU {oserial} đã tắt (không còn trên ADB).", "SUCCESS")
+                        break
+                    self.log(f"{tag} [WARN] HU {oserial} vẫn còn trên ADB — có thể bạn chưa gạt công tắc.", "WARN")
 
         trl = hu.get("rl_signal", "")
-        if not trl:
-            self.log(f"{tag} [ERROR] HU {target} thiếu cấu hình rl_signal!", "ERROR")
-            return False
-        self.log(f"{tag} Bật nguồn HU {target} (relay {trl})...", "INFO")
-        self._send_arduino(trl)
+        if trl:
+            self.log(f"{tag} Bật nguồn HU {target} (relay {trl})...", "INFO")
+            self._send_arduino(trl)
+        else:
+            # Nguồn thủ công cho HU mục tiêu (vòng chờ ADB bên dưới sẽ verify)
+            if not self._ask_manual_power(hu, turn_on=True, tag=tag):
+                return False
+            self.log(f"{tag} Chờ HU {target} khởi động lên ADB...", "INFO")
 
         start = time.time()
         while time.time() - start < self._isolate_timeout_sec:
@@ -646,11 +663,53 @@ class WorkflowWorker(QThread):
         self.log(f"{tag} Tín hiệu Arduino: keyboard={self._kb_signal} "
                  f"(double={self._kb_double}, triple={self._kb_triple}), relay={self._rl_signal}", "INFO")
 
+    def _ask_manual_power(self, hu: Dict[str, Any], turn_on: bool, tag: str) -> bool:
+        """
+        Dialog yêu cầu user bật/tắt công tắc nguồn thủ công cho 1 HU
+        (dùng khi HU không đấu relay — rl_signal trống). Tái dùng ManualAuthDialog.
+        Trả về True nếu user bấm Tiếp tục, False nếu hủy/abort/đóng dialog.
+        """
+        serial = hu.get("serial", "")
+        action = "BẬT" if turn_on else "TẮT"
+        self.log(f"{tag} HU {serial} dùng công tắc nguồn THỦ CÔNG — chờ người dùng {action} nguồn...", "WARN")
+        self._auth_event.clear()
+        self._auth_result = False
+        self.manual_auth_signal.emit({
+            "step_idx": -1,
+            "step_title": f"{tag} Nguồn thủ công".strip(),
+            "prompt": (f"HU {serial} KHÔNG đấu relay Arduino — dùng công tắc nguồn thủ công.\n\n"
+                       f"Vui lòng {action} nguồn HU này bằng công tắc vật lý, "
+                       f"rồi bấm 'Complete Authentication (Continue)'.\n"
+                       f"Bấm 'Abort' (hoặc đóng dialog) để dừng quy trình."),
+            "server_host": self.server_host,
+            "suite_name": self.suite_name,
+            "device_serial": serial,
+        })
+        self._auth_event.wait()
+        if self._abort_requested or not self._auth_result:
+            self.log(f"{tag} Người dùng đã hủy thao tác nguồn thủ công cho HU {serial}.", "ERROR")
+            return False
+        return True
+
+    def _wait_serial_gone(self, serial: str, tag: str, timeout_sec: int = 60) -> bool:
+        """Chờ 1 serial biến mất khỏi 'adb devices' (sau khi tắt nguồn thủ công)."""
+        start = time.time()
+        while time.time() - start < timeout_sec:
+            if self._abort_requested:
+                return False
+            if serial not in self._detect_adb_serials():
+                return True
+            time.sleep(5)
+        return False
+
     def _power_all_hus(self, hus: List[Dict[str, Any]], on: bool):
         """Bật/tắt nguồn tất cả HU trong danh sách (dùng khi kết thúc để khôi phục)."""
         for hu in hus:
             rl = hu.get("rl_signal", "")
             if not rl:
+                if on:
+                    self.log(f"Nhắc: HU {hu.get('serial')} dùng công tắc thủ công — hãy bật lại nguồn bằng tay.",
+                             "WARN")
                 continue
             self._send_arduino(rl if on else f"{rl}off")
             time.sleep(2)
