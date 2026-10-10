@@ -6,7 +6,7 @@ manual authentication prompts, and single/all step modes.
 import os
 import time
 import threading
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Tuple
 from PyQt6.QtCore import QThread, pyqtSignal
 from ssh_client import SSHManager
 
@@ -223,7 +223,8 @@ class WorkflowWorker(QThread):
 
     def __init__(self, ssh_mgr: SSHManager, steps: List[Dict[str, Any]], 
                  single_step_idx: Optional[int] = None, timeouts: Optional[Dict[str, int]] = None,
-                 server_host: str = "", suite_name: str = "", arduino_config: Optional[Dict[str, Any]] = None):
+                 server_host: str = "", suite_name: str = "", arduino_config: Optional[Dict[str, Any]] = None,
+                 hu_list: Optional[List[Dict[str, Any]]] = None):
         super().__init__()
         self.ssh = ssh_mgr
         self.steps = steps
@@ -232,6 +233,15 @@ class WorkflowWorker(QThread):
         self.suite_name = suite_name
         self._current_step_idx = single_step_idx or 0
         self._device_serial = ""
+        # Danh sách HU cho chế độ chạy tuần tự nhiều máy.
+        # Mỗi phần tử: {"serial": str, "kb_signal": "K1", "rl_signal": "R1", "enabled": bool}
+        # Rỗng/None = chế độ 1 HU như cũ (không đổi hành vi).
+        self.hu_list = [h for h in (hu_list or []) if h.get("enabled", True) and h.get("serial")]
+        self._hu_tag = ""
+        self._progress_base = 0
+        self._progress_total = 0
+        self._cable_checked = False
+        self._isolate_timeout_sec = 180  # thời gian tối đa chờ HU boot sau khi bật relay
         self.timeouts = timeouts or {
             "bootloader_wait_sec": 30,
             "adb_reboot_wait_sec": 80,
@@ -287,14 +297,38 @@ class WorkflowWorker(QThread):
             self.workflow_finished_signal.emit(False, "SSH chưa kết nối.")
             return
 
-        # 1. Device check verification
-        self.log("Kiểm tra thiết bị kết nối trước khi thực thi...", "INFO")
+        if self.hu_list:
+            ok, msg = self._run_multi_hu_sequential()
+        else:
+            ok, msg = self._run_steps_for_current_hu()
+
+        if ok:
+            self.log("\n🎉 TẤT CẢ CÁC BƯỚC PRE-SETUP ĐÃ HOÀN THÀNH THÀNH CÔNG! 🎉", "SUCCESS")
+            self.workflow_finished_signal.emit(True, msg)
+        else:
+            self.log("\n⚠️ Quy trình Pre-setup kết thúc không hoàn chỉnh.", "WARN")
+            self.workflow_finished_signal.emit(False, msg)
+
+    # -------------------------------------------------------------
+    # Multi-HU sequential orchestration
+    # -------------------------------------------------------------
+    def _run_steps_for_current_hu(self, hu_tag: str = "") -> Tuple[bool, str]:
+        """
+        Chạy toàn bộ step list cho 1 HU đang được cô lập (đúng 1 device trên ADB).
+        Dùng cho cả chế độ 1 HU (legacy, hu_tag="") và từng HU trong multi-HU.
+        Trả về (success, summary_message).
+        """
+        self._hu_tag = hu_tag
+        tag = f"{hu_tag} " if hu_tag else ""
+
+        # 1. Device check verification (lúc này chỉ còn đúng 1 HU trên ADB)
+        self.log(f"{tag}Kiểm tra thiết bị kết nối trước khi thực thi...", "INFO")
         valid, msg, devs = self.ssh.check_devices()
         if not valid:
-            self.log(f"[ERROR] {msg}", "ERROR")
-            self.workflow_finished_signal.emit(False, f"Kiểm tra thiết bị thất bại: {msg}")
-            return
-        self.log(f"[OK] {msg}", "SUCCESS")
+            self.log(f"[ERROR] {tag}{msg}", "ERROR")
+            return False, f"Kiểm tra thiết bị thất bại: {msg}"
+        self.log(f"[OK] {tag}{msg}", "SUCCESS")
+        self._device_serial = ""  # reset cache serial, lấy lại theo HU hiện tại
 
         steps_to_run = []
         if self.single_step_idx is not None:
@@ -303,48 +337,25 @@ class WorkflowWorker(QThread):
         else:
             steps_to_run = list(enumerate(self.steps))
 
-        # Chỉ kiểm tra cáp Arduino khi workflow thực sự chứa step arduino_auth
-        # (tránh hiện dialog cảnh báo vô ích khi user chỉ chạy lẻ 1 step flash).
-        need_arduino = any(s.get("type") == "arduino_auth" for _, s in steps_to_run)
-        if self._arduino_enabled and need_arduino:
-            self.log("Kiểm tra kết nối mạch Arduino...", "INFO")
-            code, out, _ = self.ssh.run_command("test -e /dev/arduino")
-            if code != 0:
-                self.log("[CẢNH BÁO] Không tìm thấy kết nối /dev/arduino trên server!", "WARN")
-                self._auth_event.clear()
-                self._auth_result = False
-                self.manual_auth_signal.emit({
-                    "step_idx": -1,
-                    "step_title": "Cảnh Báo Arduino",
-                    "prompt": "Tính năng tự động Bypass bằng Arduino đang BẬT nhưng không tìm thấy thiết bị kết nối (/dev/arduino) trên server.\n\nBạn có quên cắm dây cáp Arduino không?\nNhấn 'Tiếp tục' để bỏ qua và chuyển sang xác thực bằng tay, hoặc tắt bảng này để Hủy.",
-                    "server_host": self.server_host,
-                    "suite_name": self.suite_name,
-                    "device_serial": self._get_device_serial()
-                })
-                self._auth_event.wait()
-                if not self._auth_result or self._abort_requested:
-                    self.log("Người dùng đã hủy quy trình do thiếu Arduino.", "ERROR")
-                    self.workflow_finished_signal.emit(False, "Hủy quy trình do thiếu Arduino.")
-                    return
-                else:
-                    self.log("Chuyển về chế độ xác thực thủ công.", "WARN")
-                    self._arduino_enabled = False
-            else:
-                self.log("[OK] Arduino đã được kết nối sẵn sàng (/dev/arduino).", "SUCCESS")
+        # 2. Kiểm tra cáp Arduino (1 lần duy nhất cho cả quá trình)
+        if not self._check_arduino_cable(steps_to_run):
+            return False, "Hủy quy trình do thiếu Arduino."
 
         total = len(steps_to_run)
         success_all = True
 
         for i, (orig_idx, step) in enumerate(steps_to_run):
             if self._abort_requested:
-                self.log("Tiến trình đã bị hủy bởi người dùng.", "WARN")
+                self.log(f"{tag}Tiến trình đã bị hủy bởi người dùng.", "WARN")
                 success_all = False
                 break
 
             self._current_step_idx = orig_idx
-            self.progress_signal.emit(i + 1, total)
-            self.step_started_signal.emit(orig_idx, step["title"])
-            self.log(f"\n--- [{i+1}/{total}] {step['title']} ---", "INFO")
+            # Progress toàn cục khi chạy multi-HU (offset theo thứ tự HU)
+            self.progress_signal.emit(self._progress_base + i + 1, self._progress_total or total)
+            step_title = f"{tag}{step['title']}".strip()
+            self.step_started_signal.emit(orig_idx, step_title)
+            self.log(f"\n--- {tag}[{i+1}/{total}] {step['title']} ---", "INFO")
             self.log(f"Mô tả: {step.get('desc', '')}", "INFO")
 
             step_ok = False
@@ -355,16 +366,16 @@ class WorkflowWorker(QThread):
                 try:
                     step_ok = self._execute_step(step)
                 except Exception as e:
-                    self.log(f"[EXCEPTION] Lỗi khi thực hiện bước: {str(e)}", "ERROR")
+                    self.log(f"[EXCEPTION] {tag}Lỗi khi thực hiện bước: {str(e)}", "ERROR")
                     step_ok = False
 
                 if step_ok:
-                    self.log(f"[SUCCESS] Hoàn thành: {step['title']}\n", "SUCCESS")
-                    self.step_finished_signal.emit(orig_idx, step["title"], True)
+                    self.log(f"[SUCCESS] {tag}Hoàn thành: {step['title']}\n", "SUCCESS")
+                    self.step_finished_signal.emit(orig_idx, step_title, True)
                     break
                 else:
-                    self.log(f"[FAILED] Bước thất bại: {step['title']}", "ERROR")
-                    self.step_finished_signal.emit(orig_idx, step["title"], False)
+                    self.log(f"[FAILED] {tag}Bước thất bại: {step['title']}", "ERROR")
+                    self.step_finished_signal.emit(orig_idx, step_title, False)
 
                     if self._abort_requested:
                         break
@@ -372,19 +383,19 @@ class WorkflowWorker(QThread):
                     # Prompt user for decision: RETRY / SKIP / ABORT
                     self._error_event.clear()
                     self._error_decision = StepDecision.ABORT
-                    self.step_error_signal.emit(orig_idx, step["title"], "Lệnh thực thi trả về mã lỗi hoặc mất kết nối.")
+                    self.step_error_signal.emit(orig_idx, step_title, "Lệnh thực thi trả về mã lỗi hoặc mất kết nối.")
                     
                     self._error_event.wait()
 
                     if self._error_decision == StepDecision.RETRY:
-                        self.log(f"Đang thử lại bước: {step['title']}...", "WARN")
+                        self.log(f"{tag}Đang thử lại bước: {step['title']}...", "WARN")
                         continue
                     elif self._error_decision == StepDecision.SKIP:
-                        self.log(f"Người dùng đã chọn BỎ QUA bước: {step['title']}", "WARN")
+                        self.log(f"{tag}Người dùng đã chọn BỎ QUA bước: {step['title']}", "WARN")
                         step_ok = True
                         break
                     else:  # ABORT
-                        self.log("Người dùng đã chọn DỪNG quy trình.", "ERROR")
+                        self.log(f"{tag}Người dùng đã chọn DỪNG quy trình.", "ERROR")
                         self._abort_requested = True
                         success_all = False
                         break
@@ -393,12 +404,256 @@ class WorkflowWorker(QThread):
                 success_all = False
                 break
 
-        if success_all and not self._abort_requested:
-            self.log("\n🎉 TẤT CẢ CÁC BƯỚC PRE-SETUP ĐÃ HOÀN THÀNH THÀNH CÔNG! 🎉", "SUCCESS")
-            self.workflow_finished_signal.emit(True, "Pre-setup hoàn tất thành công.")
+        ok = success_all and not self._abort_requested
+        return ok, "Pre-setup hoàn tất thành công." if ok else "Quy trình bị dừng hoặc có lỗi."
+
+    def _check_arduino_cable(self, steps_to_run) -> bool:
+        """
+        Kiểm tra /dev/arduino 1 lần duy nhất cho cả quá trình.
+        Chỉ kiểm tra khi workflow thực sự chứa step arduino_auth.
+        Trả về True = tiếp tục, False = user hủy.
+        """
+        if self._cable_checked:
+            return True
+        self._cable_checked = True
+
+        need_arduino = any(s.get("type") == "arduino_auth" for _, s in steps_to_run)
+        if not (self._arduino_enabled and need_arduino):
+            return True
+
+        self.log("Kiểm tra kết nối mạch Arduino...", "INFO")
+        code, out, _ = self.ssh.run_command("test -e /dev/arduino")
+        if code != 0:
+            self.log("[CẢNH BÁO] Không tìm thấy kết nối /dev/arduino trên server!", "WARN")
+            self._auth_event.clear()
+            self._auth_result = False
+            self.manual_auth_signal.emit({
+                "step_idx": -1,
+                "step_title": "Cảnh Báo Arduino",
+                "prompt": "Tính năng tự động Bypass bằng Arduino đang BẬT nhưng không tìm thấy thiết bị kết nối (/dev/arduino) trên server.\n\nBạn có quên cắm dây cáp Arduino không?\nNhấn 'Tiếp tục' để bỏ qua và chuyển sang xác thực bằng tay, hoặc tắt bảng này để Hủy.",
+                "server_host": self.server_host,
+                "suite_name": self.suite_name,
+                "device_serial": self._get_device_serial()
+            })
+            self._auth_event.wait()
+            if not self._auth_result or self._abort_requested:
+                self.log("Người dùng đã hủy quy trình do thiếu Arduino.", "ERROR")
+                return False
+            self.log("Chuyển về chế độ xác thực thủ công.", "WARN")
+            self._arduino_enabled = False
         else:
-            self.log("\n⚠️ Quy trình Pre-setup kết thúc không hoàn chỉnh.", "WARN")
-            self.workflow_finished_signal.emit(False, "Quy trình bị dừng hoặc có lỗi.")
+            self.log("[OK] Arduino đã được kết nối sẵn sàng (/dev/arduino).", "SUCCESS")
+        return True
+
+    # -------------------------------------------------------------
+    # Multi-HU sequential mode: cô lập từng HU bằng relay rồi flash tuần tự
+    # -------------------------------------------------------------
+    def _run_multi_hu_sequential(self) -> Tuple[bool, str]:
+        """
+        Chế độ nhiều HU chạy TUẦN TỰ (khác bản gốc chạy song song):
+        với mỗi HU -> tắt nguồn các HU khác qua relay -> bật HU này ->
+        chờ ADB chỉ còn đúng serial đó -> chạy nguyên workflow Pre-setup.
+        """
+        hus = self.hu_list
+        self.log(f"Phát hiện cấu hình {len(hus)} HU — chạy TUẦN TỰ từng máy.", "INFO")
+        for h in hus:
+            self.log(f"  - Serial {h.get('serial')}: keyboard={h.get('kb_signal')}, relay={h.get('rl_signal')}", "INFO")
+
+        # 0. Kiểm kê: thiết bị lạ (không có trong config) thì không biết relay nào để tắt -> dừng an toàn
+        if not self._validate_hu_inventory(hus):
+            return False, "Phát hiện thiết bị lạ không có trong cấu hình hus."
+
+        n_steps = (1 if self.single_step_idx is not None
+                   and 0 <= self.single_step_idx < len(self.steps) else len(self.steps))
+        per_hu_total = max(n_steps, 1)
+
+        results: Dict[str, str] = {}
+        overall_ok = True
+        abort_all = False
+
+        for hu_idx, hu in enumerate(hus):
+            if self._abort_requested:
+                overall_ok = False
+                break
+            serial = hu.get("serial", "")
+            tag = f"[HU {hu_idx+1}/{len(hus)} {serial}]"
+            self.log(f"\n{'='*60}\n{tag} BẮT ĐẦU\n{'='*60}", "INFO")
+
+            self._progress_base = hu_idx * per_hu_total
+            self._progress_total = len(hus) * per_hu_total
+
+            hu_done = False
+            while not hu_done and not self._abort_requested:
+                action = self._prepare_hu(hu, hus, tag)
+                if action == "abort":
+                    overall_ok = False
+                    abort_all = True
+                    hu_done = True
+                    break
+                if action == "skip":
+                    results[serial] = "SKIPPED"
+                    overall_ok = False
+                    hu_done = True
+                    break
+
+                self._configure_hu_signals(hu, tag)
+                ok, _ = self._run_steps_for_current_hu(hu_tag=tag)
+                if ok:
+                    results[serial] = "OK"
+                    hu_done = True
+                else:
+                    decision = self._ask_hu_decision(
+                        f"{tag} Thất bại",
+                        f"Quy trình Pre-setup cho HU {serial} thất bại.\n"
+                        "- 'Thử lại': chạy lại toàn bộ workflow cho HU này.\n"
+                        "- 'Bỏ qua': chuyển sang HU tiếp theo.\n"
+                        "- 'Dừng': hủy toàn bộ quy trình.")
+                    if decision == StepDecision.RETRY:
+                        self.log(f"{tag} Thử lại toàn bộ workflow cho HU này...", "WARN")
+                        continue
+                    elif decision == StepDecision.SKIP:
+                        results[serial] = "FAIL (bỏ qua)"
+                        overall_ok = False
+                        hu_done = True
+                    else:
+                        overall_ok = False
+                        abort_all = True
+                        hu_done = True
+
+            if abort_all or self._abort_requested:
+                overall_ok = False
+                break
+
+        # Khôi phục nguồn cho tất cả HU sau khi xong (an toàn: chỉ bật nguồn)
+        self.log("Khôi phục nguồn cho tất cả các HU...", "INFO")
+        self._power_all_hus(hus, on=True)
+
+        done_ok = sum(1 for r in results.values() if r == "OK")
+        detail = "; ".join(f"{s}: {r}" for s, r in results.items())
+        summary = f"Chạy tuần tự {len(hus)} HU: {done_ok}/{len(hus)} OK ({detail})"
+        self.log(summary, "SUCCESS" if overall_ok else "WARN")
+        return overall_ok, summary
+
+    def _prepare_hu(self, hu: Dict[str, Any], hus: List[Dict[str, Any]], tag: str) -> str:
+        """
+        Cô lập 1 HU (tắt HU khác, bật HU này, chờ ADB).
+        Trả về "proceed" | "skip" | "abort" (hỏi user khi thất bại).
+        """
+        while not self._abort_requested:
+            if self._isolate_hu(hu, hus, tag):
+                return "proceed"
+            decision = self._ask_hu_decision(
+                f"{tag} Cô lập HU",
+                f"Không thể cô lập HU {hu.get('serial')} (timeout chờ ADB sau khi điều khiển relay).\n"
+                "- 'Thử lại': kiểm tra dây relay/cáp rồi thử cô lập lại.\n"
+                "- 'Bỏ qua': bỏ qua HU này, chuyển sang HU tiếp theo.\n"
+                "- 'Dừng': hủy toàn bộ quy trình.")
+            if decision == StepDecision.RETRY:
+                continue
+            return "skip" if decision == StepDecision.SKIP else "abort"
+        return "abort"
+
+    def _ask_hu_decision(self, title: str, error_msg: str) -> str:
+        """Hỏi user Retry/Skip/Abort ở cấp độ HU (tái dùng dialog step_error)."""
+        self._error_event.clear()
+        self._error_decision = StepDecision.ABORT
+        self.step_error_signal.emit(-1, title, error_msg)
+        self._error_event.wait()
+        return self._error_decision
+
+    def _detect_adb_serials(self) -> List[str]:
+        """Liệt kê serial đang thấy trên 'adb devices' (mọi trạng thái)."""
+        code, out, _ = self.ssh.run_command("adb devices", timeout=10)
+        serials = []
+        if code == 0:
+            for line in out.strip().splitlines():
+                line = line.strip()
+                if not line or line.startswith("List of devices") or line.startswith("*"):
+                    continue
+                parts = line.split()
+                if len(parts) >= 2:
+                    serials.append(parts[0])
+        return serials
+
+    def _validate_hu_inventory(self, hus: List[Dict[str, Any]]) -> bool:
+        """
+        Đối chiếu thiết bị đang cắm với config: thiết bị lạ (không có relay mapping)
+        thì không thể cô lập an toàn -> dừng ngay.
+        """
+        configured = {h.get("serial") for h in hus if h.get("serial")}
+        connected = set(self._detect_adb_serials())
+        code, out, _ = self.ssh.run_command("fastboot devices", timeout=10)
+        if code == 0:
+            for line in out.strip().splitlines():
+                parts = line.strip().split()
+                if parts:
+                    connected.add(parts[0])
+        unknown = connected - configured
+        if unknown:
+            self.log(f"[ERROR] Phát hiện thiết bị KHÔNG có trong cấu hình 'hus': {sorted(unknown)}. "
+                     f"Không biết relay kênh nào để tắt chúng -> DỪNG để an toàn. "
+                     f"Hãy thêm vào config hoặc rút nguồn thiết bị đó.", "ERROR")
+            return False
+        self.log(f"[OK] Kiểm kê: cấu hình {len(configured)} HU, đang thấy {len(connected)} thiết bị trên server.",
+                 "SUCCESS")
+        return True
+
+    def _isolate_hu(self, hu: Dict[str, Any], hus: List[Dict[str, Any]], tag: str) -> bool:
+        """
+        Cô lập 1 HU: tắt nguồn tất cả HU khác qua relay, bật HU mục tiêu,
+        chờ đến khi ADB chỉ còn đúng serial đó (timeout theo _isolate_timeout_sec).
+        """
+        target = hu.get("serial", "")
+        self.log(f"{tag} Cô lập HU: tắt nguồn các HU khác qua relay...", "INFO")
+        for other in hus:
+            if other.get("serial") == target:
+                continue
+            rl = other.get("rl_signal", "")
+            if rl:
+                self._send_arduino(f"{rl}off")
+                time.sleep(2)
+
+        trl = hu.get("rl_signal", "")
+        if not trl:
+            self.log(f"{tag} [ERROR] HU {target} thiếu cấu hình rl_signal!", "ERROR")
+            return False
+        self.log(f"{tag} Bật nguồn HU {target} (relay {trl})...", "INFO")
+        self._send_arduino(trl)
+
+        start = time.time()
+        while time.time() - start < self._isolate_timeout_sec:
+            if self._abort_requested:
+                return False
+            serials = set(self._detect_adb_serials())
+            if serials == {target}:
+                self.log(f"{tag} [OK] ADB chỉ còn HU mục tiêu: {target}", "SUCCESS")
+                return True
+            extra = sorted(serials - {target})
+            if extra:
+                self.log(f"{tag} Vẫn còn thiết bị khác trên ADB {extra}, đang chờ relay ngắt nguồn...", "WARN")
+            time.sleep(5)
+        self.log(f"{tag} [ERROR] Timeout {self._isolate_timeout_sec}s chờ cô lập HU {target}.", "ERROR")
+        return False
+
+    def _configure_hu_signals(self, hu: Dict[str, Any], tag: str):
+        """Nạp tín hiệu Arduino riêng của từng HU (ghi đè cấu hình chung)."""
+        kb = hu.get("kb_signal") or self.arduino_config.get("kb_signal", "K1") or "K1"
+        last = kb[-1]
+        self._kb_signal = kb
+        self._kb_double = kb + last
+        self._kb_triple = kb + last + last
+        self._rl_signal = hu.get("rl_signal") or self.arduino_config.get("rl_signal", "R1")
+        self.log(f"{tag} Tín hiệu Arduino: keyboard={self._kb_signal} "
+                 f"(double={self._kb_double}, triple={self._kb_triple}), relay={self._rl_signal}", "INFO")
+
+    def _power_all_hus(self, hus: List[Dict[str, Any]], on: bool):
+        """Bật/tắt nguồn tất cả HU trong danh sách (dùng khi kết thúc để khôi phục)."""
+        for hu in hus:
+            rl = hu.get("rl_signal", "")
+            if not rl:
+                continue
+            self._send_arduino(rl if on else f"{rl}off")
+            time.sleep(2)
 
     # -------------------------------------------------------------
     # Step Execution Dispatcher
