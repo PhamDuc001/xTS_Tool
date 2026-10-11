@@ -528,6 +528,7 @@ class ServerTab(QWidget):
         """
         Danh sách HU cho chế độ chạy tuần tự nhiều máy.
         Mỗi phần tử: {"serial": str, "kb_signal": "K1", "rl_signal": "R1", "enabled": bool}.
+        rl_signal để trống = HU dùng công tắc nguồn THỦ CÔNG (tool sẽ hỏi user gạt công tắc).
         Rỗng = chế độ 1 HU như cũ.
         """
         hus = self.config.get("hus", [])
