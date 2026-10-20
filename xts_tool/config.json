@@ -53,7 +53,14 @@
       "port": 22,
       "username": "googleqa",
       "password": "googleqa"
-    }
+    },
+    "aptra_exec_server": {
+      "host": "10.157.116.185",
+      "port": 22,
+      "username": "googleqa",
+      "password": "googleqa"
+    },
+    "ignore_fingerprint": true
   },
   "default_paths": {
     "binary_root": "/home/lge/Environment/Storage/Binary/",

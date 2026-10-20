@@ -249,6 +249,11 @@ class GenerateReportTab(QWidget):
         self.chk_auto_upload_heavy.setChecked(False)
         ctrl_layout.addWidget(self.chk_auto_upload_heavy)
 
+        self.chk_ignore_fingerprint = QCheckBox("🛡️ Ignore Fingerprint (APTRA)")
+        self.chk_ignore_fingerprint.setToolTip("Bỏ qua lỗi sai khác fingerprint giữa các suite trên APTRA (tương đương IGNORE trên Jenkins)")
+        self.chk_ignore_fingerprint.setChecked(True)
+        ctrl_layout.addWidget(self.chk_ignore_fingerprint)
+
         ctrl_layout.addStretch()
 
         self.lbl_status = QLabel("Status: Ready")
@@ -358,6 +363,8 @@ class GenerateReportTab(QWidget):
             self.txt_googleqa_dest.setText(gr_cfg["googleqa_dest_path"])
         if "auto_upload_heavy_archives" in gr_cfg:
             self.chk_auto_upload_heavy.setChecked(bool(gr_cfg["auto_upload_heavy_archives"]))
+        if "ignore_fingerprint" in gr_cfg:
+            self.chk_ignore_fingerprint.setChecked(bool(gr_cfg["ignore_fingerprint"]))
 
     def _get_execution_params(self) -> Dict[str, Any]:
         return {
@@ -375,6 +382,7 @@ class GenerateReportTab(QWidget):
             "aptra_path": self.txt_aptra_path.text().strip(),
             "googleqa_dest_path": self.txt_googleqa_dest.text().strip(),
             "auto_upload_heavy_archives": self.chk_auto_upload_heavy.isChecked(),
+            "ignore_fingerprint": self.chk_ignore_fingerprint.isChecked(),
             "report_generator_script": self.txt_generator_path.text().strip(),
             "aptra_server": self.config.get("generate_report", {}).get("aptra_server", {
                 "host": "loghub.lge.com", "port": 22, "username": "aptra", "password": "aptra"

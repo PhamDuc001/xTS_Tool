@@ -443,6 +443,7 @@ echo "SYNC_APTRA_COMPLETE"
     # Step 3: Run APTRA Analysis via SSH on Execution Server (with Web Fallback)
     # -------------------------------------------------------------------------
     def _step3_run_aptra_analysis(self) -> Tuple[bool, str]:
+        """Executes APTRA analysis script via SSH directly on APTRA server (10.157.116.185)."""
         p = self._get_paths()
         model_full = p["model_full"]
         sw_version = p["sw_version"]
@@ -450,7 +451,7 @@ echo "SYNC_APTRA_COMPLETE"
         if not model_full or not sw_version:
             return False, f"Thiếu thông tin Model ({model_full}) hoặc SW Version ({sw_version})."
 
-        # Pre-check: Verify data directory exists in APTRA Storage (/nas/APTRA/{model_full}/{sw_version})
+        # Pre-check: Verify data directory exists in APTRA Storage (/nas/APTRA/{model_full}/{sw_version} or /home/aptra/APTRA/...)
         remote_dir = p["aptra_path"]
         self.log(f"Kiểm tra thư mục dữ liệu đầu vào trên storage APTRA ({remote_dir})...", "INFO")
         aptra_cfg = self.params.get("aptra_server", {})
@@ -465,7 +466,14 @@ echo "SYNC_APTRA_COMPLETE"
                 sftp_chk.stat(remote_dir)
                 existing_items = sftp_chk.listdir(remote_dir)
             except Exception:
-                existing_items = None
+                # Try fallback alternate path between /home/aptra/APTRA and /nas/APTRA
+                alt_dir = remote_dir.replace("/home/aptra/APTRA", "/nas/APTRA") if "/home/aptra/APTRA" in remote_dir else remote_dir.replace("/nas/APTRA", "/home/aptra/APTRA")
+                try:
+                    sftp_chk.stat(alt_dir)
+                    existing_items = sftp_chk.listdir(alt_dir)
+                    remote_dir = alt_dir
+                except Exception:
+                    existing_items = None
             sftp_chk.close()
             c_chk.close()
 
@@ -489,10 +497,16 @@ echo "SYNC_APTRA_COMPLETE"
         exec_user = exec_cfg.get("username", "googleqa")
         exec_pass = exec_cfg.get("password", "googleqa")
 
+        ignore_flag = "IGNORE" if self.params.get("ignore_fingerprint", True) else ""
+        sw_release = os.path.basename(remote_dir.rstrip("/").rstrip("\\")) or sw_version
+        cmd_args = f'"{model_full}" "{sw_release}"'
+        if ignore_flag:
+            cmd_args += f' {ignore_flag}'
+
         cmd = (
             f"bash -c 'cd /home/googleqa/aptra && "
             f". .aptra_venv/bin/activate && "
-            f"python3 new_googleQA_test_result.py \"{model_full}\" \"{sw_version}\"'"
+            f"python3 new_googleQA_test_result.py {cmd_args}'"
         )
 
         self.log(f"Kích hoạt phân tích tự động trên server APTRA qua SSH ({exec_host}:{exec_port})...", "INFO")
@@ -500,6 +514,7 @@ echo "SYNC_APTRA_COMPLETE"
 
         ssh_success = False
         ssh_err_msg = ""
+        output_chunks = []
 
         try:
             client = paramiko.SSHClient()
@@ -525,11 +540,13 @@ echo "SYNC_APTRA_COMPLETE"
                 if channel.recv_ready():
                     chunk = channel.recv(4096).decode("utf-8", "ignore")
                     if chunk:
+                        output_chunks.append(chunk)
                         self.log(chunk, "STREAM")
 
                 if channel.recv_stderr_ready():
                     chunk_err = channel.recv_stderr(4096).decode("utf-8", "ignore")
                     if chunk_err:
+                        output_chunks.append(chunk_err)
                         self.log(chunk_err, "STREAM")
 
                 if channel.exit_status_ready():
@@ -537,10 +554,12 @@ echo "SYNC_APTRA_COMPLETE"
                     while channel.recv_ready():
                         chunk = channel.recv(4096).decode("utf-8", "ignore")
                         if chunk:
+                            output_chunks.append(chunk)
                             self.log(chunk, "STREAM")
                     while channel.recv_stderr_ready():
                         chunk_err = channel.recv_stderr(4096).decode("utf-8", "ignore")
                         if chunk_err:
+                            output_chunks.append(chunk_err)
                             self.log(chunk_err, "STREAM")
                     break
 
@@ -550,11 +569,19 @@ echo "SYNC_APTRA_COMPLETE"
             channel.close()
             client.close()
 
-            if exit_code == 0:
-                self.log("Script new_googleQA_test_result.py trên server APTRA đã thực thi thành công.", "SUCCESS")
+            full_output = "".join(output_chunks).strip()
+            if exit_code == 0 and "===== END =====" in full_output and "Not Found Project and Version" not in full_output:
+                self.log("Script new_googleQA_test_result.py trên server APTRA đã thực thi thành công (===== END =====).", "SUCCESS")
                 ssh_success = True
             else:
-                ssh_err_msg = f"Script trên APTRA kết thúc với mã lỗi: {exit_code}"
+                lines = [l.strip() for l in full_output.splitlines() if l.strip()]
+                error_snippet = "\n".join(lines[-15:]) if lines else "Không có output từ script"
+                if "Not Found Project and Version" in full_output:
+                    ssh_err_msg = f"Script APTRA báo không tìm thấy thư mục dự án/phiên bản ({model_full}/{sw_release}) trên APTRA Storage!\n{error_snippet}"
+                elif exit_code != 0:
+                    ssh_err_msg = f"Script trên APTRA kết thúc với mã lỗi: {exit_code}\nChi tiết lỗi từ server APTRA:\n{error_snippet}"
+                else:
+                    ssh_err_msg = f"Script trên APTRA dừng đột ngột mà không in ra '===== END ====='.\nChi tiết output:\n{error_snippet}"
                 self.log(f"[ERROR] {ssh_err_msg}", "ERROR")
 
         except Exception as e:
@@ -570,7 +597,8 @@ echo "SYNC_APTRA_COMPLETE"
                 f"👉 http://aptra.lge.com:8080/job/1.%20xTS%20Result%20Report/\n\n"
                 f"Tham số cần chọn:\n"
                 f"- PROJECT_NAME: {model_full}\n"
-                f"- SW_Release: {sw_version}\n\n"
+                f"- SW_Release: {sw_release}\n"
+                f"- FINGERPRINT_CHECK_IGNORE: {ignore_flag}\n\n"
                 "Sau khi chạy xong, nhấn nút [ĐÃ CHẠY XONG - TIẾP TỤC] bên dưới."
             )
             self._aptra_confirm_event.clear()
@@ -593,7 +621,13 @@ echo "SYNC_APTRA_COMPLETE"
         try:
             client, sftp = self._open_sftp_connection(host, port, user, password)
             remote_dir = p["aptra_path"]
-            files = sftp.listdir(remote_dir)
+            try:
+                files = sftp.listdir(remote_dir)
+            except Exception:
+                alt_dir = remote_dir.replace("/home/aptra/APTRA", "/nas/APTRA") if "/home/aptra/APTRA" in remote_dir else remote_dir.replace("/nas/APTRA", "/home/aptra/APTRA")
+                files = sftp.listdir(alt_dir)
+                remote_dir = alt_dir
+
             sftp.close()
             client.close()
 
