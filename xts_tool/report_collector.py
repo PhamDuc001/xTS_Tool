@@ -127,31 +127,24 @@ def parse_session(dir_path):
 
     base_mods = list(dict.fromkeys([re.sub(r'\[.*?\]', '', m).strip() for m in all_mod_names if m]))
 
+    if total_tests == 0 and (pass_cnt + fail_cnt) > 0:
+        total_tests = pass_cnt + fail_cnt
+
     is_testcase = False
-    if (" -t " in cmd_args or "#" in cmd_args) and test_method:
-        is_testcase = True
-    elif tot_mods == 1 and total_tests == 1 and test_method:
-        if "#" in cmd_args or " -t " in cmd_args or "filter" in cmd_args:
-            is_testcase = True
-
-    m_cmd_mod = re.search(r'(?:^|\s)(?:-m|--module)\s+([^\s]+)', cmd_args)
-
-    if is_testcase:
-        sess_type = "testcase"
-    elif m_cmd_mod:
-        sess_type = "single"
-        mod_name = m_cmd_mod.group(1).strip()
-        mod_name = re.sub(r'\[.*?\]', '', mod_name).strip()
-    elif len(base_mods) == 1:
-        sess_type = "single"
-        mod_name = base_mods[0]
-    elif len(base_mods) > 1 or tot_mods > 2 or "multiple" in cmd_args.lower() or mod_name.lower() == "multiple":
+    if len(base_mods) > 4 or tot_mods > 4:
         sess_type = "multiple"
         mod_name = "Multiple"
+    elif len(base_mods) > 1:
+        sess_type = "single"
+        mod_name = "_".join(base_mods)
+    elif total_tests == 1 and test_method:
+        sess_type = "testcase"
+        is_testcase = True
+        mod_name = base_mods[0] if base_mods else (mod_name or "Unknown")
+        testcase_name = test_method
     else:
         sess_type = "single"
-        if base_mods:
-            mod_name = base_mods[0]
+        mod_name = base_mods[0] if base_mods else (mod_name or "Unknown")
 
     if is_testcase:
         is_pass = (fail_cnt == 0 and pass_cnt > 0)
@@ -166,6 +159,7 @@ def parse_session(dir_path):
         "module_name": mod_name or "Unknown",
         "testcase_name": test_method if is_testcase else "",
         "failed_tests": failed_tests,
+        "base_mods": base_mods,
         "is_pass": is_pass,
         "type": sess_type,
         "cmd": cmd_args
@@ -332,7 +326,14 @@ def scan_and_analyze(test_root):
         if mod_name in passed_in_latest_multi:
             continue
         matched = match_module_folder(all_known_folders, mod_name)
-        mod_has_pass = any(s.get("is_pass") for s in s_list)
+        is_multi_module = "_" in mod_name and any(len(s.get("base_mods", [])) > 1 for s in s_list)
+        if is_multi_module:
+            passes = [s for s in s_list if s.get("is_pass")]
+            pass_sess = [s for s in s_list if s.get("pass", 0) > 0]
+            mod_has_pass = bool(passes or pass_sess)
+        else:
+            mod_has_pass = any(s.get("is_pass") for s in s_list)
+
         if matched:
             loc = all_known_folders[matched]["loc"]
             single_target_map[mod_name] = f"single/{matched}" if loc == "single" else matched
@@ -364,8 +365,20 @@ def scan_and_analyze(test_root):
     for mod_name, s_list in single_sessions.items():
         if mod_name in passed_in_latest_multi:
             continue
-        for s in select_history_sessions(s_list):
-            pruned_selection.add(s["timestamp"])
+        is_multi_module = "_" in mod_name and any(len(s.get("base_mods", [])) > 1 for s in s_list)
+        if is_multi_module:
+            passes = [s for s in s_list if s.get("is_pass")]
+            if passes:
+                pruned_selection.add(passes[-1]["timestamp"])
+            else:
+                pass_sess = [s for s in s_list if s.get("pass", 0) > 0]
+                if pass_sess:
+                    pruned_selection.add(pass_sess[-1]["timestamp"])
+                elif s_list:
+                    pruned_selection.add(s_list[-1]["timestamp"])
+        else:
+            for s in select_history_sessions(s_list):
+                pruned_selection.add(s["timestamp"])
     for (mod_name, tc_name), s_list in tc_sessions.items():
         passes = [s for s in s_list if s["is_pass"]]
         if passes:
@@ -513,6 +526,7 @@ def parse_session(dir_path):
     fail_cnt = -1
     tot_mods = 0
     done_mods = 0
+    failed_tests = []
     all_mod_names = []
     
     if os.path.exists(xml_path):
@@ -535,9 +549,12 @@ def parse_session(dir_path):
                     mod_name = m_n
                     if m_mod.group(2):
                         total_tests = int(m_mod.group(2))
-            m_test = re.search(r'<Test\s+result="[^"]*"\s+name="([^"]+)"', header)
-            if m_test:
-                test_method = m_test.group(1)
+            for tm in re.finditer(r'<Test\s+result="([^"]*)"\s+name="([^"]+)"', header):
+                res_type, t_name = tm.group(1), tm.group(2)
+                if not test_method:
+                    test_method = t_name
+                if res_type == "fail":
+                    failed_tests.append(t_name)
         except Exception:
             pass
 
@@ -574,31 +591,24 @@ def parse_session(dir_path):
 
     base_mods = list(dict.fromkeys([re.sub(r'\[.*?\]', '', m).strip() for m in all_mod_names if m]))
 
+    if total_tests == 0 and (pass_cnt + fail_cnt) > 0:
+        total_tests = pass_cnt + fail_cnt
+
     is_testcase = False
-    if (" -t " in cmd_args or "#" in cmd_args) and test_method:
-        is_testcase = True
-    elif tot_mods == 1 and total_tests == 1 and test_method:
-        if "#" in cmd_args or " -t " in cmd_args or "filter" in cmd_args:
-            is_testcase = True
-
-    m_cmd_mod = re.search(r'(?:^|\s)(?:-m|--module)\s+([^\s]+)', cmd_args)
-
-    if is_testcase:
-        sess_type = "testcase"
-    elif m_cmd_mod:
-        sess_type = "single"
-        mod_name = m_cmd_mod.group(1).strip()
-        mod_name = re.sub(r'\[.*?\]', '', mod_name).strip()
-    elif len(base_mods) == 1:
-        sess_type = "single"
-        mod_name = base_mods[0]
-    elif len(base_mods) > 1 or tot_mods > 2 or "multiple" in cmd_args.lower() or mod_name.lower() == "multiple":
+    if len(base_mods) > 4 or tot_mods > 4:
         sess_type = "multiple"
         mod_name = "Multiple"
+    elif len(base_mods) > 1:
+        sess_type = "single"
+        mod_name = "_".join(base_mods)
+    elif total_tests == 1 and test_method:
+        sess_type = "testcase"
+        is_testcase = True
+        mod_name = base_mods[0] if base_mods else (mod_name or "Unknown")
+        testcase_name = test_method
     else:
         sess_type = "single"
-        if base_mods:
-            mod_name = base_mods[0]
+        mod_name = base_mods[0] if base_mods else (mod_name or "Unknown")
 
     if is_testcase:
         is_pass = (fail_cnt == 0 and pass_cnt > 0)
@@ -612,6 +622,8 @@ def parse_session(dir_path):
         "done_modules": done_mods,
         "module_name": mod_name or "Unknown",
         "testcase_name": test_method if is_testcase else "",
+        "failed_tests": failed_tests,
+        "base_mods": base_mods,
         "is_pass": is_pass,
         "type": sess_type,
         "cmd": cmd_args
@@ -838,7 +850,21 @@ def execute_organize(test_root):
             continue
 
         matched = match_module_folder(all_known_folders, mod_name)
-        mod_has_pass = any(s.get("is_pass") for s in s_list)
+        is_multi_module = "_" in mod_name and any(len(s.get("base_mods", [])) > 1 for s in s_list)
+
+        if is_multi_module:
+            passes = [s for s in s_list if s.get("is_pass")]
+            if passes:
+                selected_s = [passes[-1]]
+                mod_has_pass = True
+            else:
+                pass_sess = [s for s in s_list if s.get("pass", 0) > 0]
+                selected_s = [pass_sess[-1]] if pass_sess else [s_list[-1]]
+                mod_has_pass = bool(pass_sess)
+        else:
+            mod_has_pass = any(s.get("is_pass") for s in s_list)
+            selected_s = select_history_sessions(s_list)
+
         if matched:
             target_fol_name = matched
             target_base = all_known_folders[matched]["path"]
@@ -855,8 +881,6 @@ def execute_organize(test_root):
 
         dest_res = os.path.join(target_base, "results")
         dest_log = os.path.join(target_base, "logs")
-
-        selected_s = select_history_sessions(s_list)
         selected_ts = {s["timestamp"] for s in selected_s}
         module_all_ts = {s["timestamp"] for s in s_list}
         unwanted_ts = module_all_ts - selected_ts

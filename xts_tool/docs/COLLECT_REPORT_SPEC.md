@@ -39,22 +39,31 @@ Cấu trúc đích được sinh ra tại `<test_root>/Report/` tuân thủ nghi
 
 ## 2. 5 Quy Tắc Thu Thập & Tổ Chức Dữ Liệu
 
-### Quy tắc 1: Phân loại Session (`parse_session`)
-Mỗi session trong thư mục nguồn `results/` được bóc tách từ `test_result.xml` và `test_result_failures_suite.html`, phân loại thành 3 nhóm:
-- **`multiple`**: Session chạy tổng thể nhiều module (`len(base_mods) > 1`, `tot_mods > 2`, hoặc command line chứa từ khóa `multiple`).
-- **`single`**: Session chạy retry 1 module đơn lẻ (`-m <module>` hoặc kết quả chỉ gồm 1 module duy nhất).
-- **`testcase`**: Session chạy retry 1 testcase cụ thể (`-t <test>`, `#<method>`, hoặc chỉ chạy duy nhất 1 testcase).
+### Quy tắc 1: Phân loại Session dựa trên Dữ Liệu Thực Thi (`parse_session`)
+Tuyệt đối **không dựa vào chuỗi câu lệnh `command_line_args`** (`-m`, `-t`, `--include-filter` hay `run retry`) vì câu lệnh có rất nhiều biến thể và không phản ánh đúng logic. Thay vào đó, phân loại trực tiếp dựa trên cấu trúc kết quả XML/HTML:
+
+1. **Chuẩn hóa Module gốc (`base_mods`):**  
+   Bóc tách bỏ hậu tố `[...]` (như `[instant]`, `[secondary_user]`). Ví dụ: `CtsNetTestCases` và `CtsNetTestCases[instant]` đều quy về `CtsNetTestCases`.
+
+2. **Phân tầng loại Session:**
+   - **`multiple`**: Session chạy tổng thể toàn suite khi `len(base_mods) > 4` HOẶC `tot_mods > 4`.
+   - **`single` (Targeted Multi-Module Retry)**: Khi chạy gom $1 < 	ext{len(base\_mods)} \le 4$ trong 1 session (ví dụ `--include-filter "mod1 tc1" --include-filter "mod2 tc2"`).  
+     - Tên module đại diện ghép từ các module gốc: `mod_name = "_".join(base_mods)` (ví dụ `moduleA_moduleB`).  
+     - Tên thư mục sinh ra: **`{id}.{moduleA_moduleB}`**.  
+     - **Điều hướng vào `single/`:** Chỉ cần session có ít nhất 1 testcase PASS (`pass_cnt > 0`), folder sẽ được đưa vào **`Report/single/{id}.{moduleA_moduleB}/`** để làm chứng cứ cho các testcase đã pass (kể cả khi còn 1 case fail chưa fix).  
+     - **Tự động Ignore/Prune session fail cũ:** Khi người dùng chạy `run retry --retry` cho session này và PASS 100%, tool sẽ tự động giữ lại duy nhất session Pass mới nhất và xóa bỏ (prune) session fail cũ trước đó.
+   - **`testcase`**: Khi `len(base_mods) == 1` VÀ tổng số test thực thi bằng `1` (`total_tests == 1` hoặc `pass_cnt + fail_cnt == 1`) VÀ có `test_method`.  
+     - Tên folder: `{id}.{mod_name}_{tc_name}` đặt trong `Report/single/`.
+   - **`single` (Single Module Retry)**: Khi `len(base_mods) == 1` VÀ chạy nhiều hơn 1 testcase (kể cả khi chạy đồng thời biến thể `[instant]`).  
+     - Tên folder: `{id}.{mod_name}` (hoặc `{id}.{mod_name}_multi`).
 
 ### Quy tắc 2: Lọc lịch sử chọn lọc "2 đầu + 2 cuối" (`select_history_sessions`)
-Áp dụng cho các chuỗi retry của Multiple và Single Module nhằm tối ưu dung lượng file zip nộp chứng chỉ:
-1. Xác định session **Pass cuối cùng** và cắt bỏ toàn bộ các session fail thừa phát sinh sau đó.
-2. Nếu số lượng session `< 5`: Giữ lại toàn bộ.
-3. Nếu số lượng session `≥ 5`: Chỉ giữ lại đúng **4 session cốt lõi**:
-   - `[0]`: Session đầu tiên (lần chạy đầu / gốc ghi nhận fail).
-   - `[1]`: Session thứ hai (lần retry đầu).
-   - `[-2]`: Session áp chót.
-   - `[-1]`: Session cuối cùng (kết quả pass).
-4. Các session thừa ở giữa sẽ tự động được tỉa gọn (**PRUNE**) khỏi cả `results/` lẫn `logs/`.
+Áp dụng cho các chuỗi retry của Multiple và Single Module thông thường nhằm tối ưu dung lượng:
+1. Với Single Module thông thường:
+   - Nếu $\ge 5$ sessions: Giữ `[0]`, `[1]`, `[-2]`, `[-1]`, tỉa gọn các session ở giữa.
+2. Với Multi-Module Targeted Retry (`{moduleA_moduleB}`):
+   - Nếu đã có session Pass 100%: Chỉ giữ lại duy nhất session Pass mới nhất, loại bỏ toàn bộ các session fail cũ.
+   - Nếu chưa pass 100%: Giữ session có kết quả pass mới nhất để lưu giữ bằng chứng pass.
 
 ### Quy tắc 3: Quy ước đặt tên thư mục (`{id}.{Name}`)
 - Tiền tố số thứ tự tăng dần 2 chữ số: `01.`, `02.`, `03.`... (tính tiếp theo ID lớn nhất đang tồn tại qua `get_max_existing_id`).
