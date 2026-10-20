@@ -7,12 +7,12 @@ import os
 import re
 import time
 from datetime import datetime
-from typing import Dict, Any, List
+from typing import Dict, Any
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QLineEdit,
     QPushButton, QComboBox, QTableWidget, QTableWidgetItem, QHeaderView,
     QTextEdit, QProgressBar, QGroupBox, QMessageBox, QFileDialog, QSplitter,
-    QTabWidget, QAbstractItemView, QApplication, QDialog
+    QTabWidget, QAbstractItemView, QApplication
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QTextCursor, QTextCharFormat, QFont
@@ -21,7 +21,6 @@ from ssh_client import SSHManager
 from workflow_runner import WorkflowWorker, build_workflow_steps, StepDecision
 from confirm_paths_dialog import ConfirmPathsDialog, ManualAuthDialog, ErrorDecisionDialog
 from hu_settings_dialog import HUSettingsDialog
-from hu_select_dialog import HUSelectDialog
 from report_collector import ReportOrganizeWorker
 from generate_report_tab import GenerateReportTab
 
@@ -524,26 +523,14 @@ class ServerTab(QWidget):
             "wifi_password": pc.get("wifi_password") or default_net.get("password", ""),
         }
 
-    def _get_hu_list(self) -> List[Dict[str, Any]]:
-        """
-        Danh sách HU cho chế độ chạy tuần tự nhiều máy.
-        Mỗi phần tử: {"serial": str, "kb_signal": "K1", "rl_signal": "R1", "enabled": bool}.
-        rl_signal để trống = HU dùng công tắc nguồn THỦ CÔNG (tool sẽ hỏi user gạt công tắc).
-        Rỗng = chế độ 1 HU như cũ.
-        """
-        hus = self.config.get("hus", [])
-        return [h for h in hus if h.get("enabled", True) and h.get("serial")]
-
     def _on_suite_changed(self, suite_name: str):
-        arduino_enabled = self.config.get("arduino", {}).get("enabled", False)
-        self.current_steps = build_workflow_steps(suite_name, self.paths, arduino_enabled=arduino_enabled,
+        self.current_steps = build_workflow_steps(suite_name, self.paths,
                                                   precondition_cfg=self._get_precondition_cfg())
         self._rebuild_steps_table()
 
     def _rebuild_steps_table(self):
         suite = self.combo_suite.currentText()
-        arduino_enabled = self.config.get("arduino", {}).get("enabled", False)
-        self.current_steps = build_workflow_steps(suite, self.paths, arduino_enabled=arduino_enabled,
+        self.current_steps = build_workflow_steps(suite, self.paths,
                                                   precondition_cfg=self._get_precondition_cfg())
 
         self.table_steps.setRowCount(len(self.current_steps))
@@ -581,26 +568,13 @@ class ServerTab(QWidget):
             QMessageBox.warning(self, "Chưa kết nối", "Vui lòng kết nối SSH trước!")
             return
 
-        # 1. Device check: multi-HU mode thì worker tự detect + cô lập từng HU,
-        # bỏ qua gate "đúng 1 device" ở đây (worker sẽ kiểm tra sau khi cô lập).
-        # Mỗi lần chạy hiện dialog cho user tick chọn HU cần chạy đợt này.
-        hus = self._get_hu_list()
-        if hus:
-            dlg = HUSelectDialog(self, hus)
-            if dlg.exec() != QDialog.DialogCode.Accepted:
-                self._append_log("[MULTI-HU] Đã hủy chọn HU, không chạy.", "WARN")
-                return
-            hus = dlg.selected_hus()
-            self._append_log(f"[MULTI-HU] Chế độ chạy tuần tự {len(hus)} HU: "
-                             + ", ".join(f"{h.get('serial')}({h.get('kb_signal')}/{h.get('rl_signal')})" for h in hus),
-                             "INFO")
-        else:
-            valid = self._check_device_status(show_dialog=False)
-            if not valid:
-                QMessageBox.critical(self, "Lỗi Thiết Bị",
-                    "Không thể chạy Pre-Setup: Yêu cầu kết nối DUY NHẤT 1 thiết bị.\n"
-                    f"{self.lbl_device_status.text()}")
-                return
+        # 1. Device check
+        valid = self._check_device_status(show_dialog=False)
+        if not valid:
+            QMessageBox.critical(self, "Lỗi Thiết Bị", 
+                "Không thể chạy Pre-Setup: Yêu cầu kết nối DUY NHẤT 1 thiết bị.\n"
+                f"{self.lbl_device_status.text()}")
+            return
 
         # 2. Confirm paths if userdebug or user is empty
         suite = self.combo_suite.currentText()
@@ -620,8 +594,7 @@ class ServerTab(QWidget):
                 return
 
         # Re-build steps with latest paths
-        arduino_enabled = self.config.get("arduino", {}).get("enabled", False)
-        self.current_steps = build_workflow_steps(suite, self.paths, arduino_enabled=arduino_enabled,
+        self.current_steps = build_workflow_steps(suite, self.paths,
                                                   precondition_cfg=self._get_precondition_cfg())
 
         # Reset step statuses
@@ -643,9 +616,7 @@ class ServerTab(QWidget):
             single_step_idx=single_step_idx,
             timeouts=self.config.get("timeouts", {}),
             server_host=self.txt_host.text().strip() or getattr(self.ssh, "host", ""),
-            suite_name=suite,
-            arduino_config=self.config.get("arduino", {}),
-            hu_list=hus
+            suite_name=suite
         )
 
         self.worker.log_signal.connect(self._append_log)
