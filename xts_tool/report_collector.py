@@ -241,18 +241,15 @@ def match_module_folder(all_known_folders, mod_name):
     return None
 
 def match_testcase_folder(all_known_folders, mod_name, tc_name):
-    mod_base = re.sub(r'(Device)?TestCases$', '', mod_name, flags=re.I).lower()
-    tc_clean = tc_name.lower()
+    # Chỉ reuse folder đã được tạo đúng cho cặp (module, testcase) này.
+    # Folder được đặt tên dạng "{id}.{mod_name}_{sanitize(tc_name)}" nên so khớp
+    # tuyệt đối sau khi bỏ prefix số thứ tự, thay vì substring (substring khiến
+    # "testRequest" bị lồng nhầm vào folder "..._testRequestNetwork").
+    want = (mod_name + "_" + sanitize_name(tc_name)).lower()
     for f in all_known_folders:
-        f_lower = f.lower()
-        if mod_base in f_lower:
-            if tc_clean in f_lower:
-                return f
-            tc_stem = re.sub(r'ifsupported|test', '', tc_clean)
-            if tc_stem and tc_stem in f_lower:
-                return f
-            if any(part in f_lower for part in tc_clean.split('_') if len(part) > 6):
-                return f
+        clean = re.sub(r"^\d+\.\s*", "", f).strip().lower()
+        if clean == want:
+            return f
     return None
 
 def scan_and_analyze(test_root):
@@ -683,18 +680,15 @@ def match_module_folder(all_known_folders, mod_name):
     return None
 
 def match_testcase_folder(all_known_folders, mod_name, tc_name):
-    mod_base = re.sub(r'(Device)?TestCases$', '', mod_name, flags=re.I).lower()
-    tc_clean = tc_name.lower()
+    # Chỉ reuse folder đã được tạo đúng cho cặp (module, testcase) này.
+    # Folder được đặt tên dạng "{id}.{mod_name}_{sanitize(tc_name)}" nên so khớp
+    # tuyệt đối sau khi bỏ prefix số thứ tự, thay vì substring (substring khiến
+    # "testRequest" bị lồng nhầm vào folder "..._testRequestNetwork").
+    want = (mod_name + "_" + sanitize_name(tc_name)).lower()
     for f in all_known_folders:
-        f_lower = f.lower()
-        if mod_base in f_lower:
-            if tc_clean in f_lower:
-                return f
-            tc_stem = re.sub(r'ifsupported|test', '', tc_clean)
-            if tc_stem and tc_stem in f_lower:
-                return f
-            if any(part in f_lower for part in tc_clean.split('_') if len(part) > 6):
-                return f
+        clean = re.sub(r"^\d+\.\s*", "", f).strip().lower()
+        if clean == want:
+            return f
     return None
 
 def copy_session(src_res_dir, src_logs_dir, dst_res_dir, dst_logs_dir, ts):
@@ -945,7 +939,10 @@ def execute_organize(test_root):
             clean_name = re.sub(r"^\d+\.\s*", "", item).strip()
             base_name = re.sub(r"_multi$", "", clean_name, flags=re.I).strip()
             for pm in passed_in_latest_multi:
-                if base_name.lower() == pm.lower() or (pm.lower() in base_name.lower() and len(pm) > 5):
+                # So khớp tuyệt đối: chỉ xóa folder của đúng module đó.
+                # Không dùng substring vì "CtsNetTestCase" in "CtsNetTestCase_testRequestNetwork"
+                # sẽ xóa nhầm folder chứa kết quả retry của testcase.
+                if base_name.lower() == pm.lower():
                     log(f"-> [CLEANUP] Xóa thư mục thừa '{item}' (module '{pm}' đã pass trong Multiple).")
                     shutil.rmtree(p, ignore_errors=True)
                     break
