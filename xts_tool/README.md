@@ -41,14 +41,16 @@ Công cụ giao diện đồ họa (UI Tool) viết bằng Python (PyQt6) chạy
    - **Real-time Log Viewer**: Xem log trực tiếp từ lệnh SSH (stdout/stderr) với màu sắc trực quan, hỗ trợ nút xóa log và lưu log ra file text.
 
 7. **Thu Thập & Tổ Chức Báo Cáo (Collect & Organize Report):**
-   - **Phân tích cực nhanh**: Đọc trực tiếp `test_result_failures_suite.html` từ thư mục `results/` trên server (thời gian < 1s, không xung đột tiến trình tradefed).
-   - **Tự động lọc Pass**: Lọc các session có `Tests Failed = 0`, phân loại Single Module (`Modules Total = 1`) và Multiple Modules (`Modules Total >= 2`).
-   - **Lấy Latest Pass**: Tự động chọn session Pass mới nhất theo timestamp cho từng module và cho Multiple.
-   - **Tự động Copy & Tái Cấu Trúc Report**:
-     - Copy folder kết quả + file `.zip` + folder log sang thư mục đích tương ứng (bỏ qua nếu đã có sẵn).
-     - Tạo thư mục `Report/single/` (nếu chưa có).
-     - Di chuyển các module Single đã Pass vào `Report/single/`, giữ nguyên các module chưa Pass ở ngoài gốc `Report/`.
-     - Với Multiple: Nếu đã Pass, di chuyển `results/` và `logs/` ra ngoài gốc `Report/` và xóa folder rỗng `00. Multiple`; nếu chưa Pass, giữ nguyên folder `00. Multiple`.
+   - **Phân loại Session Data-driven**: Phân tích trực tiếp từ dữ liệu thực thi XML/HTML (`test_result.xml` / `test_result_failures_suite.html`), loại bỏ hoàn toàn việc phụ thuộc vào chuỗi câu lệnh Tradefed (`-m`, `-t`, `--include-filter`).
+   - **Nhận diện Module Thông Minh**: Bóc tách chuẩn hóa các biến thể `[instant]`, `[secondary_user]`, đảm bảo module đơn lẻ chạy kèm instant app luôn được phân loại chính xác là Single Module.
+   - **Hỗ trợ Gom Nhiều Module Retry (Targeted Multi-Module)**: Tự động gom các session retry nhiều module (`--include-filter`) thành thư mục `{id}.{moduleA_moduleB}` trong `Report/single/` khi có chứng cứ testcase pass.
+   - **Cơ Chế Auto-Prune Session Cũ**: Khi retry thành công 100% cho nhóm multi-module, tool tự động dọn dẹp sạch các session fail cũ trong `results/` và `logs/`, chỉ giữ lại session pass mới nhất.
+   - **Lọc Lịch Sử Chọn Lọc**: Áp dụng cơ chế "2 đầu + 2 cuối" cho các chuỗi retry dài để tối ưu dung lượng lưu trữ báo cáo.
+   - **Tự động Phân Luồng & Tái Cấu Trúc Báo Cáo**:
+     - Thư mục `Report/single/` tập trung toàn bộ module, testcase và nhóm multi-module đã có kết quả PASS.
+     - Các module retry chưa pass được đưa ra ngoài thư mục gốc `Report/` để tester dễ dàng theo dõi.
+     - Dữ liệu Multiple toàn suite được tổ chức trực tiếp tại `Report/results/` và `Report/logs/`.
+     - Chi tiết quy chuẩn xem tại [COLLECT_REPORT_SPEC.md](docs/COLLECT_REPORT_SPEC.md).
 
 
 ---
