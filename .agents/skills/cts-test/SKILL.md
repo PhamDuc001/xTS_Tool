@@ -27,6 +27,8 @@ Khi người dùng cung cấp đường dẫn hoặc yêu cầu kiểm tra trạ
    - [Ca 5: Cổng Mạng Nghe UDP Đang Mở (Listening Ports)](#ca-5-cổng-mạng-nghe-udp-đang-mở-listening-ports)
    - [Ca 6: Gián Đoạn Test (Invocation Interrupted / Not Executed)](#ca-6-gián-đoạn-test-invocation-interrupted--not-executed)
    - [Ca 7: Xung Đột Đa Thiết Bị (Multi-Shard Activity Conflicts)](#ca-7-xung-đột-đa-thiết-bị-multi-shard-activity-conflicts)
+   - [Ca 8: Heads-Up Notification (HUN) Chiếm Quyền Touch Input (ActivityRecordInputSinkTests)](#ca-8-heads-up-notification-hun-chiếm-quyền-touch-input-activityrecordinputsinktests)
+   - [Ca 9: Tiến Trình Scrcpy Gây Xung Đột Virtual Display & Nghẽn IPC (SystemFeaturesTest & ActivityManagerProcessStateTest)](#ca-9-tiến-trình-scrcpy-gây-xung-đột-virtual-display--nghẽn-ipc-systemfeaturestest--activitymanagerprocessstatetest)
 4. [Định Dạng Báo Cáo Bắt Buộc Của Agent Khi Tư Vấn Cho User](#4-định-dạng-báo-cáo-bắt-buộc-của-agent-khi-tư-vấn-cho-user)
 5. [Cẩm Nang Lệnh Tradefed Console & Điều Khiển Nguồn Arduino](#5-cẩm-nang-lệnh-tradefed-console--điều-khiển-nguồn-arduino)
 
@@ -74,6 +76,12 @@ flowchart TD
 
     Type -- "notExecuted > 0 hoặc Invocation broken" --> Break["🚨 Nhóm 6: Test Bị Gián Đoạn<br>DUT bị rớt kết nối USB giữa chừng"]
     Break --> ActBreak["Hành động: Cắm lại cáp USB, adb kill-server<br>Tradefed: run retry --retry-type NOT_EXECUTED"]
+
+    Type -- "expected: 1 but was: 0<br>ActivityRecordInputSinkTests" --> HUN["🚨 Nhóm 7: HUN Nuốt Touch<br>Nissan Launcher phát HUN App Added chiếm touch"]
+    HUN --> ActHUN["Hành động: pm disable-user jp.co.nissan.hmi.home<br>Tradefed: retry gom 1 DUT, sau đó pm enable lại"]
+
+    Type -- "should NOT return true for android.hardware.touchscreen<br>hoặc timed out waiting procstate procState=FGS" --> Scrcpy["🚨 Nhóm 8: Xung Đột Virtual Display Scrcpy<br>scrcpy tạo display ảo touch NONE & ngốn IPC"]
+    Scrcpy --> ActScrcpy["Hành động: pkill -9 -f scrcpy trên host<br>Kiểm tra chỉ còn mDisplayId=0<br>Tradefed: run retry gom 1 DUT"]
 ```
 
 ---
@@ -239,6 +247,86 @@ Dưới đây là phương án hành động chuẩn hóa cho từng trường h
   Chạy độc lập module này với cờ lặp retry 2 lần (như thiết lập chuẩn trong `NissanEU_CTS_Plan_Multiple_Single.xlsx`):
   ```bash
   run cts -m CtsWindowManagerDeviceTestCases --shard-count 3 -s 22324141 -s 70b1036 -s 5a9ba6a2
+  ```
+
+---
+
+### Ca 8: Heads-Up Notification (HUN) Chiếm Quyền Touch Input (ActivityRecordInputSinkTests)
+- **Module tiêu biểu:** `CtsWindowManagerDeviceTestCases`
+- **Callstack đặc trưng:**
+  ```text
+  java.lang.AssertionError: expected: 1 but was: 0
+      at android.server.wm.ActivityRecordInputSinkTests.touchButtonsAndAssert(ActivityRecordInputSinkTests.java:201)
+  ```
+- **Nguyên nhân gốc rễ:**
+  Khi Tradefed nạp các gói APK bổ trợ test, broadcast `PACKAGE_ADDED` được phát. Launcher Nissan (`jp.co.nissan.hmi.home` - app hệ thống có platform key) bắt sự kiện này và gửi thông báo `"App Added"`. `CarHeadsUpNotificationManager` trong SystemUI bypass mọi cờ chặn DND đối với platform app, ép hiển thị thanh banner **Heads-Up Notification (HUN)** ở đỉnh giữa màn hình trong 8-10 giây. Thao tác test click vào vùng đỉnh giữa màn hình bị banner HUN nuốt mất (mở `AppsListActivity`), khiến nút bấm test nhận được 0 chạm thay vì 1 chạm.
+- **Phương án thiết bị (Device Action):**
+  1. Tạm thời vô hiệu hóa Nissan Home launcher và xóa toàn bộ notification trước khi retry:
+     ```bash
+     USER_ID=$(adb -s <serial> shell am get-current-user | tr -d '\r')
+     adb -s <serial> shell pm disable-user --user $USER_ID jp.co.nissan.hmi.home
+     adb -s <serial> shell am force-stop --user all jp.co.nissan.hmi.home
+     adb -s <serial> shell cmd notification cancel_all
+     adb -s <serial> shell wm dismiss-keyguard
+     ```
+  2. *(Sau khi test xong)* Bật lại Launcher về trạng thái bình thường:
+     ```bash
+     adb -s <serial> shell pm enable --user $USER_ID jp.co.nissan.hmi.home
+     adb -s <serial> shell input keyevent 3
+     ```
+  > [!WARNING]
+  > **Tuyệt đối KHÔNG chạy `adb root`** trên DUT để tránh hộp thoại xác thực RSA trên màn hình khiến thiết bị rơi vào trạng thái `unauthorized`.
+- **Câu lệnh Tradefed chính xác (Tradefed Command):**
+  Gom về 1 thiết bị duy nhất, không dùng `--shard-count`:
+  ```bash
+  run retry --retry <session_id> -s <serial>
+  # Hoặc chạy kiểm tra trực tiếp testcase này:
+  run cts -m CtsWindowManagerDeviceTestCases -t android.server.wm.ActivityRecordInputSinkTests#testOverlappingActivityInSameTaskDifferentUid_DoesNotBlocksTouches -s <serial>
+  ```
+
+---
+
+### Ca 9: Tiến Trình Scrcpy Gây Xung Đột Virtual Display & Nghẽn IPC (SystemFeaturesTest & ActivityManagerProcessStateTest)
+- **Module tiêu biểu:** `CtsAppTestCases`, `CtsAppTestCases[instant]`
+- **Callstack đặc trưng:**
+  - *Lỗi 1 (TouchScreen Features):*
+    ```text
+    java.lang.AssertionError: PackageManager#hasSystemFeature should NOT return true for android.hardware.touchscreen
+        at android.app.cts.SystemFeaturesTest.testTouchScreenFeatures(SystemFeaturesTest.java:566)
+    ```
+  - *Lỗi 2 (FGS Sticky):*
+    ```text
+    java.lang.IllegalStateException: Timed out waiting for next line: uid=... cmd=procstate procState=FGS capability=47
+        at android.app.cts.ActivityManagerProcessStateTest.testFgsSticky2(...)
+    ```
+- **Nguyên nhân gốc rễ:**
+  1. Khi bật `scrcpy` trên máy host để xem màn hình thiết bị, tiến trình `scrcpy-server` trên DUT tạo một **Virtual Display** (`Display: mDisplayId=3`, density 1dpi, cờ `touch NONE` / `-touch`). Khi CTS gọi `mActivityManager.getDeviceConfigurationInfo()`, Android đọc cấu hình toàn cục `globalConfig.touchscreen` từ màn hình ảo này và trả về `Configuration.TOUCHSCREEN_NOTOUCH`. Bài test assert rằng nếu là `NOTOUCH` thì PackageManager không được phép có `android.hardware.touchscreen`, dẫn đến vỡ assertion với phần cứng cảm ứng thật (`Atmel maXTouch`).
+  2. Đồng thời, luồng video capture và encoder liên tục của scrcpy chạy ngầm chiếm ~15% CPU và làm nghẽn hàng đợi Binder IPC, làm lệnh dump `cmd=procstate` của các bài test Foreground Service Sticky bị timeout.
+- **Phương án thiết bị & Host (Device & Host Action):**
+  1. **Tắt triệt để `scrcpy` trên máy host trước khi chạy test:**
+     ```bash
+     pkill -9 -f scrcpy
+     ```
+  2. Kiểm tra xác nhận màn hình ảo đã biến mất hoàn toàn:
+     ```bash
+     adb -s <serial> shell dumpsys window displays | grep 'Display: mDisplayId='
+     # Chỉ được phép hiển thị duy nhất màn hình vật lý:
+     # Display: mDisplayId=0 (organized)
+     ```
+  3. Đánh thức và mở khóa màn hình DUT:
+     ```bash
+     adb -s <serial> shell svc power stayon true
+     adb -s <serial> shell settings put global stay_on_while_plugged_in 7
+     adb -s <serial> shell wm dismiss-keyguard
+     adb -s <serial> shell cmd notification cancel_all
+     adb -s <serial> shell wm size reset
+     adb -s <serial> shell wm density reset
+     adb -s <serial> shell input keyevent 3
+     ```
+- **Câu lệnh Tradefed chính xác (Tradefed Command):**
+  Gom về 1 thiết bị duy nhất, không dùng `--shard-count`:
+  ```bash
+  run retry --retry <session_id> -s <serial>
   ```
 
 ---

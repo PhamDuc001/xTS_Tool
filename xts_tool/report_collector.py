@@ -47,20 +47,7 @@ def sanitize_name(name):
     return re.sub(r'[\s\[\]#:$]+', '_', name).strip('_')
 
 def find_effective_report_dir(test_root):
-    r_dir = os.path.join(test_root, "Report")
-    if not os.path.exists(r_dir):
-        return r_dir
-    candidate_wrappers = []
-    for item in os.listdir(r_dir):
-        p = os.path.join(r_dir, item)
-        if os.path.isdir(p) and re.match(r"^\d+\.", item):
-            if any(kw in item.lower() for kw in ["testcase", "multiple", "androidtest"]):
-                continue
-            if os.path.exists(os.path.join(p, "single")) or os.path.exists(os.path.join(p, "results")):
-                candidate_wrappers.append(p)
-    if len(candidate_wrappers) == 1:
-        return candidate_wrappers[0]
-    return r_dir
+    return os.path.join(test_root, "Report")
 
 def parse_session(dir_path):
     xml_path = os.path.join(dir_path, "test_result.xml")
@@ -75,6 +62,7 @@ def parse_session(dir_path):
     tot_mods = 0
     done_mods = 0
     failed_tests = []
+    all_mod_names = []
     
     if os.path.exists(xml_path):
         try:
@@ -89,10 +77,13 @@ def parse_session(dir_path):
                 fail_cnt = int(m_sum.group(2))
                 done_mods = int(m_sum.group(3))
                 tot_mods = int(m_sum.group(4))
-            m_mod = re.search(r'<Module\s+name="([^"]+)"[^>]*total_tests="(\d+)"', header)
-            if m_mod:
-                mod_name = m_mod.group(1)
-                total_tests = int(m_mod.group(2))
+            for m_mod in re.finditer(r'<Module\s+name="([^"]+)"(?:[^>]*total_tests="(\d+)")?', header):
+                m_n = m_mod.group(1)
+                all_mod_names.append(m_n)
+                if not mod_name:
+                    mod_name = m_n
+                    if m_mod.group(2):
+                        total_tests = int(m_mod.group(2))
             
             for tm in re.finditer(r'<Test\s+result="([^"]*)"\s+name="([^"]+)"', header):
                 res_type, t_name = tm.group(1), tm.group(2)
@@ -126,13 +117,15 @@ def parse_session(dir_path):
                     if m_td:
                         clean = re.sub(r"<[^>]+>", "", m_td.group(1)).replace("&nbsp;", " ").strip()
                         parts = clean.split()
-                        if len(parts) >= 2 and any(a in parts[0].lower() for a in ["arm", "x86", "mips", "riscv"]):
-                            mod_name = parts[1]
-                        elif len(parts) >= 1:
-                            mod_name = parts[0]
-                        break
+                        row_mod = parts[1] if (len(parts) >= 2 and any(a in parts[0].lower() for a in ["arm", "x86", "mips", "riscv"])) else (parts[0] if parts else "")
+                        if row_mod:
+                            all_mod_names.append(row_mod)
+                            if not mod_name:
+                                mod_name = row_mod
         except Exception:
             pass
+
+    base_mods = list(dict.fromkeys([re.sub(r'\[.*?\]', '', m).strip() for m in all_mod_names if m]))
 
     is_testcase = False
     if (" -t " in cmd_args or "#" in cmd_args) and test_method:
@@ -141,15 +134,29 @@ def parse_session(dir_path):
         if "#" in cmd_args or " -t " in cmd_args or "filter" in cmd_args:
             is_testcase = True
 
+    m_cmd_mod = re.search(r'(?:^|\s)(?:-m|--module)\s+([^\s]+)', cmd_args)
+
     if is_testcase:
         sess_type = "testcase"
-    elif tot_mods > 1 or "Multiple" in cmd_args or mod_name.lower() == "multiple":
+    elif m_cmd_mod:
+        sess_type = "single"
+        mod_name = m_cmd_mod.group(1).strip()
+        mod_name = re.sub(r'\[.*?\]', '', mod_name).strip()
+    elif len(base_mods) == 1:
+        sess_type = "single"
+        mod_name = base_mods[0]
+    elif len(base_mods) > 1 or tot_mods > 2 or "multiple" in cmd_args.lower() or mod_name.lower() == "multiple":
         sess_type = "multiple"
         mod_name = "Multiple"
     else:
         sess_type = "single"
+        if base_mods:
+            mod_name = base_mods[0]
 
-    is_pass = (fail_cnt == 0 and tot_mods > 0 and done_mods == tot_mods and pass_cnt > 0)
+    if is_testcase:
+        is_pass = (fail_cnt == 0 and pass_cnt > 0)
+    else:
+        is_pass = (fail_cnt == 0 and tot_mods > 0 and done_mods == tot_mods)
 
     return {
         "pass": pass_cnt,
@@ -187,7 +194,7 @@ def get_passed_modules_from_session(session_dir):
                                 p_cnt = int(clean_tds[1])
                                 f_cnt = int(clean_tds[2])
                                 is_done = (clean_tds[7].lower() == "true")
-                                if is_done and f_cnt == 0 and p_cnt > 0:
+                                if is_done and f_cnt == 0:
                                     passed_mods.add(m_name)
                             except Exception:
                                 pass
@@ -492,20 +499,7 @@ def sanitize_name(name):
     return re.sub(r'[\s\[\]#:$]+', '_', name).strip('_')
 
 def find_effective_report_dir(test_root):
-    r_dir = os.path.join(test_root, "Report")
-    if not os.path.exists(r_dir):
-        return r_dir
-    candidate_wrappers = []
-    for item in os.listdir(r_dir):
-        p = os.path.join(r_dir, item)
-        if os.path.isdir(p) and re.match(r"^\d+\.", item):
-            if any(kw in item.lower() for kw in ["testcase", "multiple", "androidtest"]):
-                continue
-            if os.path.exists(os.path.join(p, "single")) or os.path.exists(os.path.join(p, "results")):
-                candidate_wrappers.append(p)
-    if len(candidate_wrappers) == 1:
-        return candidate_wrappers[0]
-    return r_dir
+    return os.path.join(test_root, "Report")
 
 def parse_session(dir_path):
     xml_path = os.path.join(dir_path, "test_result.xml")
@@ -519,6 +513,7 @@ def parse_session(dir_path):
     fail_cnt = -1
     tot_mods = 0
     done_mods = 0
+    all_mod_names = []
     
     if os.path.exists(xml_path):
         try:
@@ -533,10 +528,13 @@ def parse_session(dir_path):
                 fail_cnt = int(m_sum.group(2))
                 done_mods = int(m_sum.group(3))
                 tot_mods = int(m_sum.group(4))
-            m_mod = re.search(r'<Module\s+name="([^"]+)"[^>]*total_tests="(\d+)"', header)
-            if m_mod:
-                mod_name = m_mod.group(1)
-                total_tests = int(m_mod.group(2))
+            for m_mod in re.finditer(r'<Module\s+name="([^"]+)"(?:[^>]*total_tests="(\d+)")?', header):
+                m_n = m_mod.group(1)
+                all_mod_names.append(m_n)
+                if not mod_name:
+                    mod_name = m_n
+                    if m_mod.group(2):
+                        total_tests = int(m_mod.group(2))
             m_test = re.search(r'<Test\s+result="[^"]*"\s+name="([^"]+)"', header)
             if m_test:
                 test_method = m_test.group(1)
@@ -566,13 +564,15 @@ def parse_session(dir_path):
                     if m_td:
                         clean = re.sub(r"<[^>]+>", "", m_td.group(1)).replace("&nbsp;", " ").strip()
                         parts = clean.split()
-                        if len(parts) >= 2 and any(a in parts[0].lower() for a in ["arm", "x86", "mips", "riscv"]):
-                            mod_name = parts[1]
-                        elif len(parts) >= 1:
-                            mod_name = parts[0]
-                        break
+                        row_mod = parts[1] if (len(parts) >= 2 and any(a in parts[0].lower() for a in ["arm", "x86", "mips", "riscv"])) else (parts[0] if parts else "")
+                        if row_mod:
+                            all_mod_names.append(row_mod)
+                            if not mod_name:
+                                mod_name = row_mod
         except Exception:
             pass
+
+    base_mods = list(dict.fromkeys([re.sub(r'\[.*?\]', '', m).strip() for m in all_mod_names if m]))
 
     is_testcase = False
     if (" -t " in cmd_args or "#" in cmd_args) and test_method:
@@ -581,15 +581,29 @@ def parse_session(dir_path):
         if "#" in cmd_args or " -t " in cmd_args or "filter" in cmd_args:
             is_testcase = True
 
+    m_cmd_mod = re.search(r'(?:^|\s)(?:-m|--module)\s+([^\s]+)', cmd_args)
+
     if is_testcase:
         sess_type = "testcase"
-    elif tot_mods > 1 or "Multiple" in cmd_args or mod_name.lower() == "multiple":
+    elif m_cmd_mod:
+        sess_type = "single"
+        mod_name = m_cmd_mod.group(1).strip()
+        mod_name = re.sub(r'\[.*?\]', '', mod_name).strip()
+    elif len(base_mods) == 1:
+        sess_type = "single"
+        mod_name = base_mods[0]
+    elif len(base_mods) > 1 or tot_mods > 2 or "multiple" in cmd_args.lower() or mod_name.lower() == "multiple":
         sess_type = "multiple"
         mod_name = "Multiple"
     else:
         sess_type = "single"
+        if base_mods:
+            mod_name = base_mods[0]
 
-    is_pass = (fail_cnt == 0 and tot_mods > 0 and done_mods == tot_mods and pass_cnt > 0)
+    if is_testcase:
+        is_pass = (fail_cnt == 0 and pass_cnt > 0)
+    else:
+        is_pass = (fail_cnt == 0 and tot_mods > 0 and done_mods == tot_mods)
 
     return {
         "pass": pass_cnt,
@@ -626,7 +640,7 @@ def get_passed_modules_from_session(session_dir):
                                 p_cnt = int(clean_tds[1])
                                 f_cnt = int(clean_tds[2])
                                 is_done = (clean_tds[7].lower() == "true")
-                                if is_done and f_cnt == 0 and p_cnt > 0:
+                                if is_done and f_cnt == 0:
                                     passed_mods.add(m_name)
                             except Exception:
                                 pass

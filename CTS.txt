@@ -1,5 +1,5 @@
 1. Flash userdebug
-cd /home/lge/Environment/Storage/Binary/AIVI2_N_FULL.YAK.31.03.30.U0M.sit.userdebug/RELEASE_8155_UOS_2026-09-04_05_00_BDV/
+cd /home/lge/Environment/Storage/Binary/AIVI2_N_FULL.YAK.31.08.24.U0M.sit.userdebug/RELEASE_8155_UOS_2026-10-05_03_24_BDV/
 adb reboot bootloader
 fastboot devices   (sleep ~5s để device vào trạng thái fastboot)
 ./fastboot_n_fullnavi_blank_flash.sh
@@ -16,7 +16,7 @@ Run: ./MTC_PZ1D_26MY.sh
 Run: ./ChangeLanguage.sh {serial}
 
 4. Flash user
-cd /home/lge/Environment/Storage/Binary/AIVI2_N_FULL.YAK.31.03.30.U0M.sit.user/RELEASE_8155_UOS_2026-09-04_07_11_BDV_PROD/
+cd /home/lge/Environment/Storage/Binary/AIVI2_N_FULL.YAK.31.08.24.U0M.sit.user/RELEASE_8155_UOS_2026-10-05_05_19_BDV_PROD/
 adb reboot bootloader
 fastboot devices
 ./fastboot_n_fullnavi_reflash.sh
