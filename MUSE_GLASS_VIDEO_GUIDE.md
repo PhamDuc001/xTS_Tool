@@ -72,6 +72,7 @@ D:\Learning\video\glass-studio\
     tts.py                   Edge TTS → vo\<scene>.mp3 + .json (word timings)
     build.py                 căn thời gian → timeline.js + index.html + lib\
     voice_check.py           đo giọng (F0/cv/tốc độ) — PHẢI PASS trước khi render (mục 6.5)
+    make_vo.ps1              (chạy trên Windows người dùng) tts → voice_check → renders\<slug>_vo.zip (mục 6.6)
   assets\
     fonts\BeVietnamPro-*.ttf
     sfx\*.wav
@@ -222,6 +223,27 @@ kiểm lại script.json + tts.py nguyên văn, chạy lại tts.py. Không bao 
 - `NoAudioReceived`: dịch vụ chập chờn / bị giới hạn khi gọi dồn dập → tts.py đã retry; nếu vẫn lỗi, chờ 30–60 s rồi chạy lại
   (cache theo hash nên chỉ cảnh lỗi bị tổng hợp lại). Không dùng `rate="+0%"`/`"+1%"` (từng gây NoAudioReceived).
 - Video dài hơn/ngắn hơn mục tiêu → **sửa số từ trong lời đọc** (~200 từ/phút), KHÔNG đổi `rate`.
+
+### 6.6 Khi máy agent KHÔNG truy cập được Edge TTS (proxy/sandbox chặn `speech.platform.bing.com`)
+
+Dấu hiệu: `ClientConnectorSSLError`, HTTP 400/403 từ proxy, lỗi giống hệt nhau mọi lần thử. Đây **không** phải Edge chập chờn
+→ đừng retry mãi, **không đổi engine**. Giọng chuẩn sẽ do máy Windows của người dùng tạo theo quy trình sau:
+
+1. Agent viết xong `videos\<slug>\script.json` (đã chốt lời) → gửi **nguyên văn file** cho người dùng, dừng chờ.
+   Không sửa lời đọc sau bước này: `tts.py` cache theo hash của *lời đọc thuần* (voice|rate|pitch|text sau khi bỏ marker),
+   lệch 1 ký tự lời đọc → hash khác → tts.py sẽ đòi tổng hợp lại (và lại lỗi mạng).
+   Đổi/thêm marker `{cue:sfx}` hoặc `**từ khóa**` thì **không** sao (không ảnh hưởng hash).
+2. Người dùng chạy trên Windows:
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File D:\Learning\video\glass-studio\tools\make_vo.ps1 <slug> -Script <đường dẫn script.json nhận từ agent>
+   ```
+   Script chép script.json → chạy `tts.py` (tự thử lại 3 lần, cách 45 s) → `voice_check.py` (phải PASS) →
+   nén `vo\` thành `renders\<slug>_vo.zip` (mỗi cảnh 1 `.mp3` + 1 `.json`).
+3. Người dùng gửi zip cho agent → agent giải nén vào `videos\<slug>\vo\` (ghi đè), chạy `tts.py <slug>` — phải in
+   `cached` cho **mọi** cảnh (nếu có cảnh `tts` = script.json lệch → báo người dùng, không tự xử lý) →
+   `voice_check.py <slug>` PASS → `build.py` → snapshot → render như bình thường.
+
+Bản giọng thay thế cũ (nếu có) không được dùng để render; chỉ giữ tạm làm backup rồi xóa sau khi bản mới PASS.
 
 ### 6.4 Video mẫu hoàn chỉnh — `videos\rent_vs_buy\script.json`
 ```json
@@ -1435,6 +1457,7 @@ if __name__ == "__main__":
 | `unknown cue xxx` trong check | Tên cue trong scenes.js không có trong script.json | Sửa marker, chạy lại tts (nếu đổi lời) + build |
 | Video ngắn hơn yêu cầu | +15% đọc rất nhanh (~3,3 từ/s) | Thêm từ (~200 từ/phút). KHÔNG đổi `rate` (mục 6.5) |
 | Giọng nghe "đều đều/phẳng", khác tập 1 | Dùng engine/giọng khác, đổi pitch, tách câu, hoặc hậu xử lý audio | Làm đúng mục 6.5; `voice_check.py` phải PASS |
+| `ClientConnectorSSLError` / proxy trả 400 khi gọi Edge | Máy agent bị chặn mạng tới Microsoft | Mục 6.6: gửi script.json cho người dùng chạy `make_vo.ps1`, nhận lại zip `vo\` |
 
 ---
 
