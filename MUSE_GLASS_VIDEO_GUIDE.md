@@ -240,7 +240,9 @@ Dấu hiệu: `ClientConnectorSSLError`, HTTP 400/403 từ proxy, lỗi giống 
    ```powershell
    powershell -ExecutionPolicy Bypass -File D:\Learning\video\glass-studio\tools\make_vo.ps1 <slug> -Script <đường dẫn script.json nhận từ agent>
    ```
-   Script chép script.json → chạy `tts.py` (tự thử lại 3 lần, cách 45 s) → `voice_check.py` (phải PASS) →
+   Script chép script.json → **kiểm tra trước** (Python ≥ 3.10 có edge-tts + numpy — tự tìm `glass-studio\.venv`, venv manim-studio,
+   `py -3`, `python`; ffmpeg trên PATH; script.json: JSON UTF-8, voice/rate/pitch đúng, id cảnh không dấu & không trùng,
+   `**` chẵn, marker `{ten}`/`{ten:sfx}` đúng cú pháp) → chạy `tts.py` (tự thử lại 3 lần, cách 45 s) → `voice_check.py` (phải PASS) →
    nén `vo\` thành `renders\<slug>_vo.zip` (mỗi cảnh 1 `.mp3` + 1 `.json`).
 3. Người dùng gửi zip cho agent → agent giải nén vào `videos\<slug>\vo\` (ghi đè), chạy `tts.py <slug>` — phải in
    `cached` cho **mọi** cảnh (nếu có cảnh `tts` = script.json lệch → báo người dùng, không tự xử lý) →
