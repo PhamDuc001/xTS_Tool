@@ -16,6 +16,7 @@
 3. Trả lời ngắn gọn bằng **tiếng Việt**. Báo tiến độ ngắn ở mỗi giai đoạn.
 4. Làm ngoài phạm vi kế hoạch đã duyệt → dừng lại xin phép.
 5. Máy là **Windows + PowerShell 5.1**: dùng `;` thay `&&`, đường dẫn dùng `\`.
+6. **Giọng đọc là chữ ký của series — làm đúng mục 6.5, `voice_check.py` phải PASS trước khi render.**
 
 ---
 
@@ -70,6 +71,7 @@ D:\Learning\video\glass-studio\
     markup.py                parse cú pháp **từ khóa** và {cue:sfx}
     tts.py                   Edge TTS → vo\<scene>.mp3 + .json (word timings)
     build.py                 căn thời gian → timeline.js + index.html + lib\
+    voice_check.py           đo giọng (F0/cv/tốc độ) — PHẢI PASS trước khi render (mục 6.5)
   assets\
     fonts\BeVietnamPro-*.ttf
     sfx\*.wav
@@ -183,7 +185,43 @@ Quy tắc:
 - "Q2/2026" → viết "quý hai năm 2026". "m²" → "mét vuông". "tr" → "triệu".
 - Câu ngắn, nhịp nhanh, nhiều câu hỏi tu từ; xưng "bạn"/"mình".
 - Màn hình được phép dùng dạng gọn (5,25 tỷ; 123 tr/m²) dù lời đọc dài.
-- Giọng nữ: `vi-VN-HoaiMyNeural`. Muốn chậm hơn: `+5%` hoặc `+10%`.
+- Giọng của series là **cố định** — xem mục 6.5. Không tự đổi giọng/tốc độ.
+
+### 6.5 GIỌNG ĐỌC BẮT BUỘC (chữ ký âm thanh của series — KHÔNG được thay đổi)
+
+> Lý do có mục này: một bản tập 2 do agent khác dựng nghe "đều đều, phẳng" khác hẳn tập 1. Đo ra: F0 p10 = 134 Hz, f0_cv = 0,146
+> (giọng chuẩn: p10 ≈ 110, cv ≈ 0,20) và dài hơn ~15%. Đổi `rate` **không** làm thay đổi cao độ, nên giọng phẳng nghĩa là
+> **đã dùng engine/giọng khác hoặc đã hậu xử lý audio**. Người xem nhận ra ngay → phải giữ đúng 100% cách làm dưới đây.
+
+**Chỉ được tạo giọng bằng đúng một cách:**
+1. `tools\tts.py` **nguyên văn** (mục 11.5) — thư viện Python `edge-tts`, gọi `edge_tts.Communicate(text, "vi-VN-NamMinhNeural", rate="+15%")`.
+2. `script.json`: `"voice": "vi-VN-NamMinhNeural"`, `"rate": "+15%"`, **không có** khóa `pitch`/`volume`.
+3. **Mỗi cảnh = 1 lần gọi TTS cho cả đoạn lời** (tts.py đã làm vậy). KHÔNG tách từng câu thành nhiều file rồi ghép
+   — làm vậy mất ngữ điệu xuống giọng cuối đoạn và tạo khoảng lặng đều đặn kiểu robot.
+4. Dùng nguyên file `vo\<scene>.mp3` mà Edge trả về. KHÔNG normalize, compress, EQ, đổi pitch, đổi tốc độ (atempo),
+   cắt khoảng lặng, thêm reverb. `build.py` chỉ đặt audio lên timeline (lead-in 0,4 s, gap 0,45 s giữa cảnh, tail 1,2 s).
+
+**CẤM tuyệt đối:** `hyperframes tts`, Kokoro, Piper, gTTS, `vi-VN-HoaiMyNeural`, giọng MAI/FPT/ElevenLabs, Azure SSML
+`<prosody pitch=…>`, hay bất kỳ engine nào khác — kể cả khi Edge lỗi mạng. Nếu Edge lỗi thì **thử lại / chờ**, không đổi engine.
+
+**Chữ ký chuẩn (đo từ tập 1 `rent_vs_buy`):**
+
+| Chỉ số | Chuẩn | Ngưỡng PASS |
+|---|---|---|
+| F0 trung vị | ~151 Hz | 138–165 |
+| F0 p10 | ~110 Hz | 100–126 |
+| F0 p90 | ~190 Hz | 180–205 |
+| f0_cv (std/median) | ~0,20 | 0,16–0,26 |
+| Tốc độ | ~3,35 từ/giây | 3,0–3,7 |
+
+**Kiểm tra bắt buộc** sau `tts.py`, trước khi viết scenes/render: `& $py voice_check.py <slug>` → phải in `VOICE CHECK: PASS`
+(exit code 0). Sau khi render có thể kiểm lại file MP4: `& $py voice_check.py ..\renders\<slug>.mp4`. FAIL → xóa `vo\`,
+kiểm lại script.json + tts.py nguyên văn, chạy lại tts.py. Không bao giờ nới ngưỡng để cho qua.
+
+**Lỗi Edge thường gặp:**
+- `NoAudioReceived`: dịch vụ chập chờn / bị giới hạn khi gọi dồn dập → tts.py đã retry; nếu vẫn lỗi, chờ 30–60 s rồi chạy lại
+  (cache theo hash nên chỉ cảnh lỗi bị tổng hợp lại). Không dùng `rate="+0%"`/`"+1%"` (từng gây NoAudioReceived).
+- Video dài hơn/ngắn hơn mục tiêu → **sửa số từ trong lời đọc** (~200 từ/phút), KHÔNG đổi `rate`.
 
 ### 6.4 Video mẫu hoàn chỉnh — `videos\rent_vs_buy\script.json`
 ```json
@@ -239,6 +277,7 @@ $env:PYTHONIOENCODING='utf-8'
 $py='D:\Learning\video\manim-studio\.venv\Scripts\python.exe'
 & $py sfx.py                     # chỉ cần 1 lần (assets\sfx đã có thì bỏ qua)
 & $py tts.py <slug>              # cache theo hash: chỉ cảnh đổi lời mới tổng hợp lại
+& $py voice_check.py <slug>      # BẮT BUỘC PASS (mục 6.5) — FAIL thì dừng, không làm tiếp
 & $py build.py <slug>            # BẮT BUỘC chạy lại sau MỌI lần sửa scenes.js / script.json / template
 
 # --- kiểm tra ---
@@ -1272,6 +1311,112 @@ if __name__ == "__main__":
 })();
 ```
 
+### 11.9 `tools\voice_check.py` (kiểm tra chữ ký giọng — mục 6.5)
+```python
+"""Kiểm tra giọng đọc có đúng "chữ ký" chuẩn của series (Edge vi-VN-NamMinhNeural, +15%) hay không.
+
+Dùng:
+  python voice_check.py <slug>            # đo videos/<slug>/vo/*.mp3 (giọng sạch, không SFX)  -> dùng TRƯỚC khi render
+  python voice_check.py path\to\file.mp4  # đo 1 video đã render (có lẫn SFX nên số hơi lệch)
+
+Chỉ số đo (cùng cách rea-video dùng): F0 trung vị, p10/p90, f0_cv = std/median (độ "lên xuống" của giọng).
+Chuẩn đo từ rent_vs_buy: median ~150 Hz, p10 ~115, p90 ~190, cv ~0.19, ~3.3 từ/giây.
+Giọng phẳng/đều (cv thấp, p10 cao) = KHÔNG phải NamMinh qua Edge (engine khác, đổi pitch, hoặc đã hậu xử lý).
+"""
+import json, subprocess, sys
+from pathlib import Path
+import numpy as np
+
+SR = 16000
+ROOT = Path(__file__).resolve().parent.parent
+RULES = [  # (tên, hàm lấy giá trị, min, max)
+    ("F0 median (Hz)", lambda s: s["med"], 138, 165),
+    ("F0 p10 (Hz)", lambda s: s["p10"], 100, 126),
+    ("F0 p90 (Hz)", lambda s: s["p90"], 180, 205),
+    ("f0_cv", lambda s: s["cv"], 0.16, 0.26),
+]
+
+
+def decode(path):
+    out = subprocess.run(["ffmpeg", "-v", "error", "-i", str(path), "-ac", "1", "-ar", str(SR), "-f", "f32le", "-"],
+                         capture_output=True, check=True).stdout
+    return np.frombuffer(out, np.float32)
+
+
+def f0_track(x):
+    fr, hop = 640, 320
+    thr = 0.45 * np.sqrt((x ** 2).mean())
+    lo, hi = SR // 300, SR // 70
+    f = []
+    for i in range(0, len(x) - fr, hop):
+        s = x[i:i + fr]
+        if np.sqrt((s ** 2).mean()) < thr:
+            continue
+        s = s - s.mean()
+        ac = np.correlate(s, s, "full")[fr - 1:]
+        k = lo + int(np.argmax(ac[lo:hi]))
+        if ac[k] > 0.45 * ac[0]:
+            f.append(SR / k)
+    return np.array(f)
+
+
+def stats(f):
+    med = float(np.median(f))
+    return {"med": med, "p10": float(np.percentile(f, 10)), "p90": float(np.percentile(f, 90)), "cv": float(f.std() / med)}
+
+
+def main():
+    if len(sys.argv) < 2:
+        sys.exit(__doc__)
+    arg = Path(sys.argv[1])
+    problems = []
+    if arg.suffix.lower() in (".mp4", ".mp3", ".wav", ".m4a"):
+        f = f0_track(decode(arg))
+        print(f"Nguồn: {arg.name} (video đã render, có lẫn SFX)")
+    else:
+        vdir = ROOT / "videos" / sys.argv[1]
+        script = json.loads((vdir / "script.json").read_text(encoding="utf-8"))
+        v, r, p = script.get("voice"), script.get("rate"), script.get("pitch", "+0Hz")
+        print(f"script.json: voice={v} rate={r} pitch={p}")
+        if v != "vi-VN-NamMinhNeural": problems.append(f"voice phải là vi-VN-NamMinhNeural (đang: {v})")
+        if r != "+15%": problems.append(f"rate phải là +15% (đang: {r})")
+        if p not in (None, "+0Hz"): problems.append(f"không được đặt pitch (đang: {p})")
+        mp3s = sorted((vdir / "vo").glob("*.mp3"))
+        if not mp3s:
+            sys.exit("Chưa có vo\\*.mp3 — chạy tts.py trước.")
+        words = dur = 0.0
+        tracks = []
+        for m in mp3s:
+            tracks.append(f0_track(decode(m)))
+            j = json.loads(m.with_suffix(".json").read_text(encoding="utf-8"))
+            if j.get("words"):
+                words += len(j["words"])
+                dur += j["words"][-1]["end"] - j["words"][0]["start"]
+        f = np.concatenate(tracks)
+        if dur:
+            wps = words / dur
+            print(f"Tốc độ: {wps:.2f} từ/giây ({int(words)} từ / {dur:.1f}s giọng)")
+            if not 3.0 <= wps <= 3.7: problems.append(f"tốc độ {wps:.2f} từ/s ngoài 3.0–3.7 (chuẩn ~3.3)")
+        print(f"Nguồn: {len(mp3s)} file vo\\*.mp3")
+    if len(f) < 50:
+        sys.exit("Không đủ khung có giọng để đo.")
+    s = stats(f)
+    for name, get, lo, hi in RULES:
+        val = get(s)
+        ok = lo <= val <= hi
+        print(f"  {'OK ' if ok else 'FAIL'} {name:15s} {val:7.3f}   (chuẩn {lo}–{hi})")
+        if not ok: problems.append(f"{name} = {val:.3f} ngoài {lo}–{hi}")
+    if problems:
+        print("\nVOICE CHECK: FAIL — giọng KHÔNG khớp series. Tạo lại bằng tools\\tts.py nguyên bản (mục 6.5):")
+        for p in problems: print("  -", p)
+        sys.exit(1)
+    print("\nVOICE CHECK: PASS")
+
+
+if __name__ == "__main__":
+    main()
+```
+
 ---
 
 ## 12. Lỗi đã gặp & cách xử lý (ĐỌC KỸ)
@@ -1288,7 +1433,8 @@ if __name__ == "__main__":
 | curl lỗi `CRYPT_E_NO_REVOCATION_CHECK` | Proxy công ty | `curl.exe --ssl-no-revoke` |
 | PowerShell dừng vì stderr của node | `ErrorActionPreference=Stop` / NativeCommandError | `$ErrorActionPreference='Continue'` + `2>&1 \| ForEach-Object { "$_" }` |
 | `unknown cue xxx` trong check | Tên cue trong scenes.js không có trong script.json | Sửa marker, chạy lại tts (nếu đổi lời) + build |
-| Video ngắn hơn yêu cầu | +15% đọc rất nhanh (~3,3 từ/s) | Thêm từ (~200 từ/phút) hoặc giảm `rate` xuống `+5%` |
+| Video ngắn hơn yêu cầu | +15% đọc rất nhanh (~3,3 từ/s) | Thêm từ (~200 từ/phút). KHÔNG đổi `rate` (mục 6.5) |
+| Giọng nghe "đều đều/phẳng", khác tập 1 | Dùng engine/giọng khác, đổi pitch, tách câu, hoặc hậu xử lý audio | Làm đúng mục 6.5; `voice_check.py` phải PASS |
 
 ---
 
@@ -1296,7 +1442,7 @@ if __name__ == "__main__":
 
 1. Đọc kịch bản → đếm từ → ước thời lượng → kiểm tra/tính lại số liệu.
 2. Đề xuất: slug, bảng 6–8 cảnh (id · ý chính · bố cục theo mục 8.5 · các cue + SFX), file sẽ tạo, lệnh sẽ chạy. **Chờ duyệt.**
-3. Tạo `script.json` (mục 6) + `scenes.js` khung rỗng → `tts.py` → `build.py` → đọc `timeline.js` lấy thời lượng thật.
+3. Tạo `script.json` (mục 6) + `scenes.js` khung rỗng → `tts.py` → **`voice_check.py` PASS** → `build.py` → đọc `timeline.js` lấy thời lượng thật.
 4. Viết `scenes.js` đầy đủ, tận dụng helper `header()` và các mẫu ở mục 11.8.
 5. `build.py` → `check` (0 runtime error) → `snapshot` ở cuối mỗi cảnh → xem ảnh → sửa bố cục → lặp.
 6. Kiểm tra dung lượng đĩa → render (TEMP ở ổ D, `-q high -f 30 -w 2`) → `ffprobe` → xóa `.tmp`.
@@ -1314,7 +1460,8 @@ Bạn là video engineer. Đọc kỹ file D:\Learning\video\glass-studio\MUSE_G
 Kịch bản video mới:
 - Tiêu đề: <...>
 - Thời lượng mong muốn: <2 phút>
-- Giọng: vi-VN-NamMinhNeural, +15%
+- Giọng: đúng mục 6.5 (edge-tts vi-VN-NamMinhNeural +15%, tools\tts.py nguyên văn, không hậu xử lý,
+  voice_check.py phải PASS trước khi render)
 - Nội dung / lời đọc:
 <dán kịch bản>
 
