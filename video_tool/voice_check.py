@@ -5,7 +5,7 @@ Dùng:
   python voice_check.py path\to\file.mp4  # đo 1 video đã render (có lẫn SFX nên số hơi lệch)
 
 Chỉ số đo (cùng cách rea-video dùng): F0 trung vị, p10/p90, f0_cv = std/median (độ "lên xuống" của giọng).
-Chuẩn đo từ rent_vs_buy: median ~150 Hz, p10 ~115, p90 ~190, cv ~0.19, ~3.3 từ/giây.
+Chuẩn đo từ rent_vs_buy: median ~150 Hz, p10 ~110, p90 ~190, cv ~0.20, ~4.6 từ chữ/giây.
 Giọng phẳng/đều (cv thấp, p10 cao) = KHÔNG phải NamMinh qua Edge (engine khác, đổi pitch, hoặc đã hậu xử lý).
 """
 import json, subprocess, sys
@@ -69,19 +69,24 @@ def main():
         mp3s = sorted((vdir / "vo").glob("*.mp3"))
         if not mp3s:
             sys.exit("Chưa có vo\\*.mp3 — chạy tts.py trước.")
+        # Edge gộp số/ngày ("190", "Ngày 2 tháng 3 năm 2026") thành 1 token dù đọc nhiều âm tiết
+        # -> chỉ đo trên token chữ (không chứa số), bỏ khoảng nghỉ > 0.6 s.
         words = dur = 0.0
         tracks = []
         for m in mp3s:
             tracks.append(f0_track(decode(m)))
-            j = json.loads(m.with_suffix(".json").read_text(encoding="utf-8"))
-            if j.get("words"):
-                words += len(j["words"])
-                dur += j["words"][-1]["end"] - j["words"][0]["start"]
+            w = json.loads(m.with_suffix(".json").read_text(encoding="utf-8")).get("words", [])
+            for a, b in zip(w, w[1:]):
+                step = b["start"] - a["start"]
+                if any(c.isdigit() for c in a["text"]) or step > 0.6:
+                    continue
+                words += 1
+                dur += step
         f = np.concatenate(tracks)
         if dur:
             wps = words / dur
-            print(f"Tốc độ: {wps:.2f} từ/giây ({int(words)} từ / {dur:.1f}s giọng)")
-            if not 3.0 <= wps <= 3.7: problems.append(f"tốc độ {wps:.2f} từ/s ngoài 3.0–3.7 (chuẩn ~3.3)")
+            print(f"Tốc độ: {wps:.2f} từ chữ/giây ({int(words)} từ, bỏ token chứa số)")
+            if not 4.2 <= wps <= 5.3: problems.append(f"tốc độ {wps:.2f} từ chữ/s ngoài 4.2–5.3 (chuẩn ~4.6)")
         print(f"Nguồn: {len(mp3s)} file vo\\*.mp3")
     if len(f) < 50:
         sys.exit("Không đủ khung có giọng để đo.")
